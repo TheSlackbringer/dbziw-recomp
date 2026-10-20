@@ -23,6 +23,10 @@ Ghidra, PCSX2, record/replay, pitfalls): "Reference" at the end of this file.
   commit and NEVER mark an issue `confirmed` or `closed` until you explicitly type "confirmed",
   "approved", or "close" in chat. Reaching `fixed — maintainer test` means STOP and wait for review.
   An image upload, terminal paste, test run, or empty message is NEVER approval to commit or close.
+- **Never ask you to run an automated test:** Automated tests are exclusively the agent's job to
+  run, verify, and log. The "Maintainer test" section is strictly reserved for things a machine cannot
+  judge (gameplay feel, controller responsiveness, visual artifacts, sound timing). If an issue is
+  100% covered by automated tests, the Maintainer test is explicitly "None (fully automated)".
 - **Pushing is yours:** push only after you agreed to that push.
 - Changes to `notes/` are tracked locally; keep your findings, logs, and milestone history updated there.
 - Before relying on the game files, verify them: `game/SLES_553.47` must match the player's legally dumped retail disc (PAL v1.00).
