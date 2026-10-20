@@ -19,6 +19,10 @@ Ghidra, PCSX2, record/replay, pitfalls): "Reference" at the end of this file.
   Verify register ABI ($a0–$a3 vs $t0–$t3, quadword returns) and confirm whether the game's own compiled SDK code can run unhooked.
 - **Every claimed result names its log** (`notes/issues/tests/out/...`). "Passes" means the run has finished.
 - **Only you approve a spec.** Write "approved" only after you said so, with the date.
+- **Never commit or close an issue without explicit textual approval:** NEVER create a `Fix #00N`
+  commit and NEVER mark an issue `confirmed` or `closed` until you explicitly type "confirmed",
+  "approved", or "close" in chat. Reaching `fixed — maintainer test` means STOP and wait for review.
+  An image upload, terminal paste, test run, or empty message is NEVER approval to commit or close.
 - **Pushing is yours:** push only after you agreed to that push.
 - Changes to `notes/` are tracked locally; keep your findings, logs, and milestone history updated there.
 - Before relying on the game files, verify them: `game/SLES_553.47` must match the player's legally dumped retail disc (PAL v1.00).
@@ -52,12 +56,11 @@ Ghidra, PCSX2, record/replay, pitfalls): "Reference" at the end of this file.
    - **Maintainer test sessions:** `run.py full` must pass first. Batch several "fixed — maintainer test" issues into one session
      with one short list. Test window: `run.py window NNN ...` (full logging, log filed under the issues). Normal play: `run.py play`.
      You only check the specs' "Maintainer test" items; record results in `work.md` + status.
-5. **Commits and pushes:** one local commit per fixed issue ("Fix #00N: …") when it reaches "fixed — maintainer test".
-   Push only after you confirmed the issues in the batch and agreed to the push. Other commits only on command.
+5. **Commits and pushes:** one local commit per fixed issue ("Fix #00N: …") ONLY AFTER you explicitly confirm the maintainer test ("confirmed" / "close"). Never commit upon merely setting status to "fixed — maintainer test". Push only after you confirmed the issues in the batch and agreed to the push. Other commits only on command.
 6. **Stop/go:** split big work into milestones in `work.md`. When you are present: a two-line status per milestone, and an
    immediate report (with the alternative) when an approach doesn't pay off. When you are away: keep going, log milestones.
 7. **While you are away** you may: work on approved specs in the agreed order; run automated tests off-screen;
-   update `work.md` and the index; make local per-issue commits; capture PCSX2 references (headless); create NEW
+   update `work.md` and the index; prepare fixes up to "fixed — maintainer test" (commit "Fix #00N" only with explicit prior permission); capture PCSX2 references (headless); create NEW
    issues (draft spec + findings) — but not fix them. Wait for you for: fixes without an approved spec, spec
    changes, pushing, any visible window or desktop action, deleting outside your scratch space, downloads/installs/
    system settings, turning the PC off (only when asked that time). Stuck: write it under "Waiting for you" and
