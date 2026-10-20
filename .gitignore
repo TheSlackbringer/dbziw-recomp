@@ -24,6 +24,7 @@ SLPS_*
 /build/
 /port/build*/
 /app/build*/
+/external/**/build*/
 /app/deps/
 /bin/
 /out/
