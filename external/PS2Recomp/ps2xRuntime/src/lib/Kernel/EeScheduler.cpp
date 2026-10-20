@@ -2591,3 +2591,185 @@ void EeScheduler::stopWatchdog()
         }
     }
 }
+
+namespace
+{
+    struct SchedulerSnapshotHeader
+    {
+        char magic[4] = {'P', 'S', '2', 'E'};
+        uint32_t version = 1;
+        uint64_t vsyncTick = 0;
+        uint64_t eeCycle = 0;
+        uint64_t sliceEndCycle = 0;
+        uint32_t palVideoMode = 0;
+        int currentThreadId = 0;
+        int nextThreadId = 0;
+        int nextSemaphoreId = 0;
+        int nextEventFlagId = 0;
+        uint32_t threadCount = 0;
+        uint32_t semaCount = 0;
+        uint32_t eventFlagCount = 0;
+    };
+
+    struct SerializedGuestThread
+    {
+        int id = 0;
+        uint32_t entry = 0;
+        uint32_t stack = 0;
+        uint32_t stackSize = 0;
+        uint32_t gp = 0;
+        uint32_t attr = 0;
+        uint32_t option = 0;
+        uint32_t arg = 0;
+        int initialPriority = 0;
+        int currentPriority = 0;
+        int status = 0;
+        int suspendCount = 0;
+        uint32_t wakeupCount = 0;
+        R5900Context context{};
+    };
+
+    struct SerializedSemaphore
+    {
+        int id = 0;
+        int count = 0;
+        int maxCount = 0;
+    };
+
+    struct SerializedEventFlag
+    {
+        int id = 0;
+        uint32_t bits = 0;
+        uint32_t initBits = 0;
+    };
+}
+
+bool EeScheduler::dumpState(std::ostream &out)
+{
+    SchedulerSnapshotHeader hdr{};
+    hdr.vsyncTick = m_vsyncTick.load(std::memory_order_relaxed);
+    hdr.eeCycle = m_eeCycle;
+    hdr.sliceEndCycle = m_sliceEndCycle;
+    hdr.palVideoMode = m_palVideoMode.load(std::memory_order_relaxed) ? 1 : 0;
+    hdr.currentThreadId = m_currentThreadId;
+    hdr.nextThreadId = m_nextThreadId;
+    hdr.nextSemaphoreId = m_nextSemaphoreId;
+    hdr.nextEventFlagId = m_nextEventFlagId;
+    hdr.threadCount = static_cast<uint32_t>(m_threads.size());
+    hdr.semaCount = static_cast<uint32_t>(m_semaphores.size());
+    hdr.eventFlagCount = static_cast<uint32_t>(m_eventFlags.size());
+
+    out.write(reinterpret_cast<const char *>(&hdr), sizeof(hdr));
+
+    for (const auto &[id, t] : m_threads)
+    {
+        SerializedGuestThread st{};
+        st.id = t.id;
+        st.entry = t.entry;
+        st.stack = t.stack;
+        st.stackSize = t.stackSize;
+        st.gp = t.gp;
+        st.attr = t.attr;
+        st.option = t.option;
+        st.arg = t.arg;
+        st.initialPriority = t.initialPriority;
+        st.currentPriority = t.currentPriority;
+        st.status = static_cast<int>(t.status);
+        st.suspendCount = t.suspendCount;
+        st.wakeupCount = t.wakeupCount;
+        st.context = t.activeContext();
+        out.write(reinterpret_cast<const char *>(&st), sizeof(st));
+    }
+
+    for (const auto &[id, s] : m_semaphores)
+    {
+        SerializedSemaphore ss{s.id, s.count, s.maxCount};
+        out.write(reinterpret_cast<const char *>(&ss), sizeof(ss));
+    }
+
+    for (const auto &[id, ef] : m_eventFlags)
+    {
+        SerializedEventFlag sef{ef.id, ef.bits, ef.initBits};
+        out.write(reinterpret_cast<const char *>(&sef), sizeof(sef));
+    }
+
+    return out.good();
+}
+
+bool EeScheduler::loadState(std::istream &in)
+{
+    SchedulerSnapshotHeader hdr{};
+    in.read(reinterpret_cast<char *>(&hdr), sizeof(hdr));
+    if (!in.good() || std::memcmp(hdr.magic, "PS2E", 4) != 0)
+    {
+        return false;
+    }
+
+    m_vsyncTick.store(hdr.vsyncTick, std::memory_order_relaxed);
+    m_eeCycle = hdr.eeCycle;
+    m_sliceEndCycle = hdr.sliceEndCycle;
+    m_palVideoMode.store(hdr.palVideoMode != 0, std::memory_order_relaxed);
+    m_currentThreadId = hdr.currentThreadId;
+    m_nextThreadId = hdr.nextThreadId;
+    m_nextSemaphoreId = hdr.nextSemaphoreId;
+    m_nextEventFlagId = hdr.nextEventFlagId;
+
+    m_threads.clear();
+    m_readyQueues = {};
+    m_semaphores.clear();
+    m_eventFlags.clear();
+
+    for (uint32_t i = 0; i < hdr.threadCount; ++i)
+    {
+        SerializedGuestThread st{};
+        in.read(reinterpret_cast<char *>(&st), sizeof(st));
+        GuestThread t{};
+        t.id = st.id;
+        t.entry = st.entry;
+        t.stack = st.stack;
+        t.stackSize = st.stackSize;
+        t.gp = st.gp;
+        t.attr = st.attr;
+        t.option = st.option;
+        t.arg = st.arg;
+        t.initialPriority = st.initialPriority;
+        t.currentPriority = st.currentPriority;
+        t.status = static_cast<EeThreadStatus>(st.status);
+        t.suspendCount = st.suspendCount;
+        t.wakeupCount = st.wakeupCount;
+        t.context = st.context;
+
+        if (t.status == EeThreadStatus::Ready || t.status == EeThreadStatus::Running)
+        {
+            int prio = std::clamp(t.currentPriority, 0, 127);
+            m_readyQueues[prio].push_back(t.id);
+        }
+        m_threads.emplace(t.id, std::move(t));
+    }
+
+    for (uint32_t i = 0; i < hdr.semaCount; ++i)
+    {
+        SerializedSemaphore ss{};
+        in.read(reinterpret_cast<char *>(&ss), sizeof(ss));
+        EeSemaphore s{};
+        s.id = ss.id;
+        s.count = ss.count;
+        s.maxCount = ss.maxCount;
+        m_semaphores.emplace(s.id, std::move(s));
+    }
+
+    for (uint32_t i = 0; i < hdr.eventFlagCount; ++i)
+    {
+        SerializedEventFlag sef{};
+        in.read(reinterpret_cast<char *>(&sef), sizeof(sef));
+        EeEventFlag ef{};
+        ef.id = sef.id;
+        ef.bits = sef.bits;
+        ef.initBits = sef.initBits;
+        m_eventFlags.emplace(ef.id, std::move(ef));
+    }
+
+    publishSnapshot();
+    return in.good();
+}
+

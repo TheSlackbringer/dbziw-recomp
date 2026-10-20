@@ -626,6 +626,12 @@ namespace ps2x_dev
                     std::ofstream o(path);
                     o << tick << std::endl;
                 }
+                else if (cmd == "dumpstate")
+                {
+                    std::string path;
+                    ls >> path;
+                    if (runtime) runtime->dumpState(path);
+                }
                 else if (cmd == "quit")
                 {
                     std::cerr << "[dev] quit at tick " << tick << std::endl;
@@ -776,6 +782,15 @@ namespace ps2x_dev
                     writePng(dumpDir() + name);
                 }
             }
+            const char *dumpStateEnv = std::getenv("PS2X_DUMP_STATE");
+            const char *dumpTickEnv = std::getenv("PS2X_DUMP_STATE_TICK");
+            uint64_t dumpStateTick = dumpTickEnv ? std::strtoull(dumpTickEnv, nullptr, 0) : exitTick;
+            if (dumpStateEnv && *dumpStateEnv && dumpStateTick != 0u && tick == dumpStateTick)
+            {
+                std::fprintf(stderr, "[state] Dumping checkpoint to: %s at tick %llu\n", dumpStateEnv, (unsigned long long)tick);
+                if (runtime) runtime->dumpState(dumpStateEnv);
+            }
+
             if (exitTick != 0u && tick >= exitTick)
             {
                 writePng(dumpDir() + "/final.png");
@@ -3264,6 +3279,20 @@ void PS2Runtime::run()
             std::fprintf(stderr, "[ee:round] general EE arithmetic uses %s; COP1 divide/root uses nearest\n",
                 compareNearest ? "nearest (comparison)" : "round-toward-zero");
             m_eeScheduler->reset(m_memory.getRDRAM(), m_cpuContext);
+            const char *loadStateEnv = std::getenv("PS2X_LOAD_STATE");
+            if (loadStateEnv && *loadStateEnv)
+            {
+                std::fprintf(stderr, "[state] Loading checkpoint state from: %s\n", loadStateEnv);
+                if (loadState(loadStateEnv))
+                {
+                    std::fprintf(stderr, "[state] Checkpoint loaded successfully (tick=%llu pc=0x%08X)\n",
+                                 (unsigned long long)m_eeScheduler->currentVSyncTick(), m_cpuContext.pc);
+                }
+                else
+                {
+                    std::fprintf(stderr, "[state] Failed to load checkpoint state: %s\n", loadStateEnv);
+                }
+            }
             m_eeScheduler->run();
             uint32_t pc = m_debugPc.load(std::memory_order_relaxed);
             RUNTIME_LOG("Game thread returned. PC=0x" << std::hex << pc
@@ -3501,4 +3530,88 @@ void PS2Runtime::run()
 
     RUNTIME_LOG("[run] exiting loop");
 }
+
+bool PS2Runtime::dumpState(const std::filesystem::path &filePath)
+{
+    std::ofstream file(filePath, std::ios::binary);
+    if (!file.is_open())
+    {
+        std::cerr << "[state] Failed to open file for dumping state: " << filePath << std::endl;
+        return false;
+    }
+
+    struct RuntimeSnapshotHeader
+    {
+        char magic[4] = {'P', 'S', '2', 'R'};
+        uint32_t version = 1;
+        R5900Context cpuContext{};
+    } hdr;
+    hdr.cpuContext = m_cpuContext;
+    file.write(reinterpret_cast<const char *>(&hdr), sizeof(hdr));
+
+    if (!m_memory.dumpState(file))
+    {
+        std::cerr << "[state] Failed to dump memory state to " << filePath << std::endl;
+        return false;
+    }
+
+    if (m_eeScheduler)
+    {
+        if (!m_eeScheduler->dumpState(file))
+        {
+            std::cerr << "[state] Failed to dump scheduler state to " << filePath << std::endl;
+            return false;
+        }
+    }
+
+    file.flush();
+    return file.good();
+}
+
+bool PS2Runtime::loadState(const std::filesystem::path &filePath)
+{
+    std::ifstream file(filePath, std::ios::binary);
+    if (!file.is_open())
+    {
+        std::cerr << "[state] Failed to open file for loading state: " << filePath << std::endl;
+        return false;
+    }
+
+    struct RuntimeSnapshotHeader
+    {
+        char magic[4];
+        uint32_t version;
+        R5900Context cpuContext;
+    } hdr{};
+    file.read(reinterpret_cast<char *>(&hdr), sizeof(hdr));
+    if (!file.good() || std::memcmp(hdr.magic, "PS2R", 4) != 0)
+    {
+        std::cerr << "[state] Corrupt or invalid state file header in " << filePath << std::endl;
+        return false;
+    }
+
+    m_cpuContext = hdr.cpuContext;
+    if (!m_memory.loadState(file))
+    {
+        std::cerr << "[state] Failed to load memory state from " << filePath << std::endl;
+        return false;
+    }
+
+    if (m_eeScheduler)
+    {
+        if (!m_eeScheduler->loadState(file))
+        {
+            std::cerr << "[state] Failed to load scheduler state from " << filePath << std::endl;
+            return false;
+        }
+    }
+
+    m_debugPc.store(m_cpuContext.pc, std::memory_order_relaxed);
+    m_debugSp.store(static_cast<uint32_t>(_mm_extract_epi32(m_cpuContext.r[29], 0)), std::memory_order_relaxed);
+    m_debugRa.store(static_cast<uint32_t>(_mm_extract_epi32(m_cpuContext.r[31], 0)), std::memory_order_relaxed);
+    m_debugGp.store(static_cast<uint32_t>(_mm_extract_epi32(m_cpuContext.r[28], 0)), std::memory_order_relaxed);
+
+    return file.good();
+}
+
 

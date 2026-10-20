@@ -463,6 +463,9 @@ public:
     }
 
 public:
+    bool dumpState(const std::filesystem::path &filePath);
+    bool loadState(const std::filesystem::path &filePath);
+
     inline R5900Context &cpu() { return m_cpuContext; }
     inline const R5900Context &cpu() const { return m_cpuContext; }
 

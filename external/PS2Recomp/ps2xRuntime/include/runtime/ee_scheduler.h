@@ -15,6 +15,7 @@
 #include <unordered_map>
 #include <variant>
 #include <vector>
+#include <iosfwd>
 
 // This exception is the EE equivalent of a longjmp to the dispatcher.  It is
 // not an error and must only be caught at EeScheduler::run().
@@ -372,6 +373,11 @@ public:
     void stopWatchdog();
     void pokeWatchdog() noexcept;
     void dumpStallReport(uint32_t activePc, uint32_t sp, uint32_t ra);
+
+    bool dumpState(std::ostream &out);
+    bool loadState(std::istream &in);
+    void setVsyncTick(uint64_t tick) noexcept { m_vsyncTick.store(tick, std::memory_order_relaxed); }
+    void setEeCycle(uint64_t cycle) noexcept { m_eeCycle = cycle; }
 
 private:
     struct ScheduledEvent

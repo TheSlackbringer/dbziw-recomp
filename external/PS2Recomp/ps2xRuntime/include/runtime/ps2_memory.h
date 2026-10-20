@@ -361,6 +361,9 @@ public:
     bool isCodeModified(uint32_t address, uint32_t size);
     void clearModifiedFlag(uint32_t address, uint32_t size);
 
+    bool dumpState(std::ostream &out);
+    bool loadState(std::istream &in);
+
     // GS register accessors
     GSRegisters &gs() { return gs_regs; }
     // Host steady_clock ns when gs().vsyncTick was last advanced (stored before the tick; F3 VSync, issue 014).

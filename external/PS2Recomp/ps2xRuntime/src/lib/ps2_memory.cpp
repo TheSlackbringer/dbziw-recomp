@@ -3008,3 +3008,167 @@ void PS2Memory::clearModifiedFlag(uint32_t address, uint32_t size)
         }
     }
 }
+
+namespace
+{
+    struct GSRegistersPod
+    {
+        uint64_t pmode;
+        uint64_t smode1;
+        uint64_t smode2;
+        uint64_t srfsh;
+        uint64_t synch1;
+        uint64_t synch2;
+        uint64_t syncv;
+        uint64_t dispfb1;
+        uint64_t display1;
+        uint64_t dispfb2;
+        uint64_t display2;
+        uint64_t extbuf;
+        uint64_t extdata;
+        uint64_t extwrite;
+        uint64_t bgcolor;
+        uint64_t csr;
+        uint64_t vsyncTick;
+        uint64_t imr;
+        uint64_t busdir;
+        uint64_t siglblid;
+    };
+
+    struct MemorySnapshotHeader
+    {
+        char magic[4] = {'P', 'S', '2', 'M'};
+        uint32_t version = 1;
+        uint32_t rdramSize = PS2_RAM_SIZE;
+        uint32_t scratchpadSize = PS2_SCRATCHPAD_SIZE;
+        uint32_t iopRamSize = 2u * 1024u * 1024u;
+        uint32_t gsVramSize = static_cast<uint32_t>(PS2_GS_VRAM_SIZE);
+        uint32_t vu0CodeSize = PS2_VU0_CODE_SIZE;
+        uint32_t vu0DataSize = PS2_VU0_DATA_SIZE;
+        uint32_t vu1CodeSize = PS2_VU1_CODE_SIZE;
+        uint32_t vu1DataSize = PS2_VU1_DATA_SIZE;
+        GSRegistersPod gsRegs{};
+        VIFRegisters vif0Regs{};
+        VIFRegisters vif1Regs{};
+        DMARegisters dmaRegs[10]{};
+        uint32_t ioRegCount = 0;
+    };
+}
+
+bool PS2Memory::dumpState(std::ostream &out)
+{
+    MemorySnapshotHeader hdr{};
+    hdr.gsRegs.pmode = gs_regs.pmode;
+    hdr.gsRegs.smode1 = gs_regs.smode1;
+    hdr.gsRegs.smode2 = gs_regs.smode2;
+    hdr.gsRegs.srfsh = gs_regs.srfsh;
+    hdr.gsRegs.synch1 = gs_regs.synch1;
+    hdr.gsRegs.synch2 = gs_regs.synch2;
+    hdr.gsRegs.syncv = gs_regs.syncv;
+    hdr.gsRegs.dispfb1 = gs_regs.dispfb1;
+    hdr.gsRegs.display1 = gs_regs.display1;
+    hdr.gsRegs.dispfb2 = gs_regs.dispfb2;
+    hdr.gsRegs.display2 = gs_regs.display2;
+    hdr.gsRegs.extbuf = gs_regs.extbuf;
+    hdr.gsRegs.extdata = gs_regs.extdata;
+    hdr.gsRegs.extwrite = gs_regs.extwrite;
+    hdr.gsRegs.bgcolor = gs_regs.bgcolor;
+    hdr.gsRegs.csr = gs_regs.csr.load(std::memory_order_relaxed);
+    hdr.gsRegs.vsyncTick = gs_regs.vsyncTick.load(std::memory_order_relaxed);
+    hdr.gsRegs.imr = gs_regs.imr;
+    hdr.gsRegs.busdir = gs_regs.busdir;
+    hdr.gsRegs.siglblid = gs_regs.siglblid;
+
+    hdr.vif0Regs = vif0_regs;
+    hdr.vif1Regs = vif1_regs;
+    std::memcpy(hdr.dmaRegs, dma_regs, sizeof(dma_regs));
+    hdr.ioRegCount = static_cast<uint32_t>(m_ioRegisters.size());
+
+    out.write(reinterpret_cast<const char *>(&hdr), sizeof(hdr));
+
+    for (const auto &[k, v] : m_ioRegisters)
+    {
+        out.write(reinterpret_cast<const char *>(&k), sizeof(k));
+        out.write(reinterpret_cast<const char *>(&v), sizeof(v));
+    }
+
+    if (m_rdram)
+        out.write(reinterpret_cast<const char *>(m_rdram), PS2_RAM_SIZE);
+    if (m_scratchpad)
+        out.write(reinterpret_cast<const char *>(m_scratchpad), PS2_SCRATCHPAD_SIZE);
+    if (iop_ram)
+        out.write(reinterpret_cast<const char *>(iop_ram), 2u * 1024u * 1024u);
+    if (m_gsVRAM)
+        out.write(reinterpret_cast<const char *>(m_gsVRAM), PS2_GS_VRAM_SIZE);
+    if (m_vu0Code)
+        out.write(reinterpret_cast<const char *>(m_vu0Code), PS2_VU0_CODE_SIZE);
+    if (m_vu0Data)
+        out.write(reinterpret_cast<const char *>(m_vu0Data), PS2_VU0_DATA_SIZE);
+    if (m_vu1Code)
+        out.write(reinterpret_cast<const char *>(m_vu1Code), PS2_VU1_CODE_SIZE);
+    if (m_vu1Data)
+        out.write(reinterpret_cast<const char *>(m_vu1Data), PS2_VU1_DATA_SIZE);
+
+    return out.good();
+}
+
+bool PS2Memory::loadState(std::istream &in)
+{
+    MemorySnapshotHeader hdr{};
+    in.read(reinterpret_cast<char *>(&hdr), sizeof(hdr));
+    if (!in.good() || std::memcmp(hdr.magic, "PS2M", 4) != 0)
+    {
+        return false;
+    }
+
+    gs_regs.pmode = hdr.gsRegs.pmode;
+    gs_regs.smode1 = hdr.gsRegs.smode1;
+    gs_regs.smode2 = hdr.gsRegs.smode2;
+    gs_regs.srfsh = hdr.gsRegs.srfsh;
+    gs_regs.synch1 = hdr.gsRegs.synch1;
+    gs_regs.synch2 = hdr.gsRegs.synch2;
+    gs_regs.syncv = hdr.gsRegs.syncv;
+    gs_regs.dispfb1 = hdr.gsRegs.dispfb1;
+    gs_regs.display1 = hdr.gsRegs.display1;
+    gs_regs.dispfb2 = hdr.gsRegs.dispfb2;
+    gs_regs.display2 = hdr.gsRegs.display2;
+    gs_regs.extbuf = hdr.gsRegs.extbuf;
+    gs_regs.extdata = hdr.gsRegs.extdata;
+    gs_regs.extwrite = hdr.gsRegs.extwrite;
+    gs_regs.bgcolor = hdr.gsRegs.bgcolor;
+    gs_regs.csr.store(hdr.gsRegs.csr, std::memory_order_relaxed);
+    gs_regs.vsyncTick.store(hdr.gsRegs.vsyncTick, std::memory_order_relaxed);
+    gs_regs.imr = hdr.gsRegs.imr;
+    gs_regs.busdir = hdr.gsRegs.busdir;
+    gs_regs.siglblid = hdr.gsRegs.siglblid;
+
+    vif0_regs = hdr.vif0Regs;
+    vif1_regs = hdr.vif1Regs;
+    std::memcpy(dma_regs, hdr.dmaRegs, sizeof(dma_regs));
+
+    m_ioRegisters.clear();
+    for (uint32_t i = 0; i < hdr.ioRegCount; ++i)
+    {
+        uint32_t k = 0, v = 0;
+        in.read(reinterpret_cast<char *>(&k), sizeof(k));
+        in.read(reinterpret_cast<char *>(&v), sizeof(v));
+        m_ioRegisters[k] = v;
+    }
+
+    if (!m_rdram || !m_scratchpad || !iop_ram || !m_gsVRAM || !m_vu0Code || !m_vu0Data || !m_vu1Code || !m_vu1Data)
+    {
+        initialize(hdr.rdramSize);
+    }
+
+    in.read(reinterpret_cast<char *>(m_rdram), hdr.rdramSize);
+    in.read(reinterpret_cast<char *>(m_scratchpad), hdr.scratchpadSize);
+    in.read(reinterpret_cast<char *>(iop_ram), hdr.iopRamSize);
+    in.read(reinterpret_cast<char *>(m_gsVRAM), hdr.gsVramSize);
+    in.read(reinterpret_cast<char *>(m_vu0Code), hdr.vu0CodeSize);
+    in.read(reinterpret_cast<char *>(m_vu0Data), hdr.vu0DataSize);
+    in.read(reinterpret_cast<char *>(m_vu1Code), hdr.vu1CodeSize);
+    in.read(reinterpret_cast<char *>(m_vu1Data), hdr.vu1DataSize);
+
+    return in.good();
+}
+
