@@ -1,20 +1,6 @@
-# Build output
-build/
-port/build/
-bin/
-out/
-*.exe
-*.dll
-*.so
-*.dylib
-*.pdb
-
-# Game files & ELF dumps (Never commit copyrighted assets)
-game/
-discs/
-recomp/output/
-recomp/*.log
-recomp/*.txt
+# Game data: user-owned discs and extracted files. Never commit.
+/game/
+/discs/
 *.iso
 *.bin
 *.ELF
@@ -25,6 +11,44 @@ SLES_*
 SLUS_*
 SLPS_*
 
-# Local notes / scratch
-notes/scratch/
+# Ghidra databases (derived from the game binaries)
+/ghidra/
+/ghidra_iop/
+
+# Generated C++ (derived from the game ELF; regenerate with tools/regen.sh) and recompiler logs
+/recomp/**/output/
+/recomp/**/*.log
+/recomp/*.txt
+
+# Builds and logs
+/build/
+/port/build*/
+/app/build*/
+/app/deps/
+/bin/
+/out/
+*.exe
+*.dll
+*.so
+*.dylib
+*.pdb
 *.log
+*.log.*
+/logs/
+*.bak*
+imgui.ini
+
+# Python tooling caches
+__pycache__/
+*.pyc
+
+# Local research and bring-up notes (tracked in notes/.git)
+/notes/
+
+# Game-derived generated code and frame dumps: never commit
+/recomp/*/vu1/
+/final.png
+/frame_*.png
+/dist/
+/BUILD_ID/
+/build-recomp*/
