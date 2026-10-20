@@ -1,0 +1,30 @@
+# Build output
+build/
+port/build/
+bin/
+out/
+*.exe
+*.dll
+*.so
+*.dylib
+*.pdb
+
+# Game files & ELF dumps (Never commit copyrighted assets)
+game/
+discs/
+recomp/output/
+recomp/*.log
+recomp/*.txt
+*.iso
+*.bin
+*.ELF
+*.DAT
+*.AFS
+*.SFD
+SLES_*
+SLUS_*
+SLPS_*
+
+# Local notes / scratch
+notes/scratch/
+*.log
