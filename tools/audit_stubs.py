@@ -354,9 +354,63 @@ def print_cli_report(res, verbose=False):
     print("=" * 80)
 
 
+def audit_toml(toml_path, audit_res):
+    """Cross-references a PS2Recomp TOML configuration against stub recommendations."""
+    if not os.path.exists(toml_path):
+        print(f"Error: TOML configuration file not found: {toml_path}", file=sys.stderr)
+        return False
+
+    try:
+        import tomllib
+        with open(toml_path, "rb") as f:
+            cfg = tomllib.load(f)
+    except Exception as e:
+        print(f"Error parsing TOML file {toml_path}: {e}", file=sys.stderr)
+        return False
+
+    general = cfg.get("general", {})
+    stubs = general.get("stubs", []) + general.get("untracked_stubs", [])
+
+    stub_names = {}
+    for entry in stubs:
+        name = entry.split("@")[0].strip()
+        stub_names[name] = entry
+
+    native_map = {r["symbol"]: r for r in audit_res["native_unhooked"]}
+    hle_map = {r["symbol"]: r for r in audit_res["hle_stubs"]}
+
+    conflicts = []
+    for name, entry in stub_names.items():
+        if name in native_map:
+            conflicts.append((entry, native_map[name]))
+
+    print("=" * 80)
+    print(f"TOML STUB CONFIGURATION AUDIT: {os.path.basename(toml_path)}")
+    print("=" * 80)
+    print(f"Total Stubs Configured: {len(stubs)}")
+
+    if conflicts:
+        print(f"\n\033[91mCRITICAL AUDIT FAILURE: {len(conflicts)} RUN_NATIVE routines are stubbed in TOML!\033[0m")
+        for entry, r in conflicts:
+            print(f"  * \033[91m{entry:32s}\033[0m ({r['module']}) -> {r['reason']}")
+        print("\nFix: Remove these routines from [general].stubs so the game's compiled SDK code executes.")
+        print("=" * 80)
+        return False
+    else:
+        print("\n\033[92mAUDIT PASSED: 0 RUN_NATIVE conflicts detected in TOML configuration.\033[0m")
+        missing_hle = [r for name, r in hle_map.items() if name not in stub_names]
+        if missing_hle:
+            print(f"\nInfo: {len(missing_hle)} REQUIRE_HLE routines not explicitly in TOML stubs (may be handled by syscalls):")
+            for r in missing_hle[:5]:
+                print(f"  - {r['symbol']} ({r['module']})")
+        print("=" * 80)
+        return True
+
+
 def main():
     parser = argparse.ArgumentParser(description="Audit PS2 SDK and CRI stubs in SLES_553.47.")
     parser.add_argument("elf", help="Path to SLES_553.47 ELF file")
+    parser.add_argument("toml", nargs="?", default=None, help="Optional path to recomp TOML configuration to audit")
     parser.add_argument("--json", action="store_true", help="Output audit results as JSON")
     parser.add_argument("--verbose", action="store_true", help="Print detailed symbol lists")
     args = parser.parse_args()
@@ -368,6 +422,11 @@ def main():
 
     if args.json:
         print(json.dumps(result, indent=2))
+        return
+
+    if args.toml:
+        ok = audit_toml(args.toml, result)
+        sys.exit(0 if ok else 1)
     else:
         print_cli_report(result, verbose=args.verbose)
 
