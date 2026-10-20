@@ -1,6 +1,7 @@
 #include <atomic>
 #include <cstdio>
 #include "runtime/ee_scheduler.h"
+#include "runtime/ps2_symbols.h"
 
 #include "ps2_log.h"
 #include "ps2_runtime_macros.h"
@@ -96,6 +97,7 @@ EeScheduler::EeScheduler(PS2Runtime &runtime)
 EeScheduler::~EeScheduler()
 {
     requestStop();
+    stopWatchdog();
 }
 
 void EeScheduler::setCrtMode(uint32_t mode) noexcept
@@ -224,6 +226,8 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
 void EeScheduler::run()
 {
     assertExecutor();
+    pokeWatchdog();
+    startWatchdog();
     m_running.store(true, std::memory_order_release);
     const char *dispatchEnv = std::getenv("PS2X_EE_DISPATCH_TRACE");
     const bool dispatchTrace = dispatchEnv && *dispatchEnv && *dispatchEnv != '0';
@@ -233,6 +237,7 @@ void EeScheduler::run()
 
     while (!m_stopRequested.load(std::memory_order_acquire))
     {
+        pokeWatchdog();
         processPendingEvents();
         if (m_stopRequested.load(std::memory_order_acquire))
         {
@@ -457,6 +462,7 @@ void EeScheduler::run()
     m_running.store(false, std::memory_order_release);
     copyMainContextToRuntime();
     publishSnapshot();
+    stopWatchdog();
 }
 
 void EeScheduler::requestStop()
@@ -465,6 +471,7 @@ void EeScheduler::requestStop()
     m_checkpointPending.store(true, std::memory_order_release);
     m_eventCv.notify_all();
     m_presentationCv.notify_all();
+    stopWatchdog();
 }
 
 void EeScheduler::postEvent(EeEvent event)
@@ -1542,6 +1549,7 @@ uint32_t EeScheduler::setGsVSyncCallback(uint32_t callback, uint32_t gp, uint32_
 void EeScheduler::completeVSync(uint64_t tick)
 {
     assertExecutor();
+    pokeWatchdog();
     std::vector<int> completed;
     for (const auto &[id, candidate] : m_threads)
     {
@@ -2466,5 +2474,120 @@ void EeScheduler::publishIdleDebugContext()
     if (selected)
     {
         publishDebugContext(selected->activeContext());
+    }
+}
+
+void EeScheduler::pokeWatchdog() noexcept
+{
+    const int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    m_lastProgressMs.store(nowMs, std::memory_order_release);
+}
+
+void EeScheduler::dumpStallReport(uint32_t activePc, uint32_t sp, uint32_t ra)
+{
+    const auto &resolver = GuestSymbolResolver::instance();
+    std::fprintf(stderr, "\n================================================================================\n");
+    std::fprintf(stderr, "[WATCHDOG STALL] EE execution stalled for >%d seconds without yielding!\n", m_watchdogTimeoutSeconds);
+    std::fprintf(stderr, "================================================================================\n");
+    std::fprintf(stderr, "Active Thread ID: %d\n", m_currentThreadId);
+    std::fprintf(stderr, "Active PC:        0x%08X (%s)\n", activePc, resolver.resolve(activePc).c_str());
+    std::fprintf(stderr, "Return Address:   0x%08X (%s)\n", ra, resolver.resolve(ra).c_str());
+    std::fprintf(stderr, "Stack Pointer:    0x%08X\n\n", sp);
+
+    std::fprintf(stderr, "GUEST CALL STACK TRACEBACK:\n");
+    std::fprintf(stderr, "  #0  0x%08X in %s\n", activePc, resolver.resolve(activePc).c_str());
+    if (ra != 0 && ra != activePc)
+    {
+        std::fprintf(stderr, "  #1  0x%08X in %s\n", ra, resolver.resolve(ra).c_str());
+    }
+
+    if (m_rdram && sp >= 0x00100000 && sp < 0x02000000)
+    {
+        uint32_t frameIdx = (ra != 0 && ra != activePc) ? 2 : 1;
+        uint32_t maxSearch = std::min(sp + 4096u, 0x02000000u);
+        for (uint32_t addr = sp; addr < maxSearch && frameIdx < 16; addr += 4)
+        {
+            uint32_t candidate = *reinterpret_cast<const uint32_t *>(&m_rdram[addr & PS2_RAM_MASK]);
+            if (candidate >= 0x00100000 && candidate < 0x01FC0000 && (candidate & 3) == 0 && candidate != activePc && candidate != ra)
+            {
+                const GuestSymbol *sym = resolver.find(candidate);
+                if (sym)
+                {
+                    std::fprintf(stderr, "  #%-2u 0x%08X in %s (sp+0x%X)\n", frameIdx++, candidate, resolver.resolve(candidate).c_str(), addr - sp);
+                }
+            }
+        }
+    }
+
+    std::fprintf(stderr, "\nEXECUTION CONTEXT:\n");
+    std::fprintf(stderr, "  VSync Tick:     %llu\n", (unsigned long long)m_vsyncTick.load());
+    std::fprintf(stderr, "  EE Cycle:       %llu\n", (unsigned long long)m_eeCycle);
+    std::fprintf(stderr, "  Video Mode:     %s\n", m_palVideoMode.load() ? "PAL (50 Hz)" : "NTSC (60 Hz)");
+    std::fprintf(stderr, "================================================================================\n\n");
+    std::fflush(stderr);
+}
+
+void EeScheduler::startWatchdog()
+{
+    const char *env = std::getenv("PS2X_STALL_WATCHDOG");
+    if (!env || !*env)
+        return;
+
+    int timeout = std::atoi(env);
+    if (timeout <= 0)
+        return;
+
+    m_watchdogTimeoutSeconds = timeout;
+    pokeWatchdog();
+    m_watchdogRunning.store(true, std::memory_order_release);
+
+    m_watchdogThread = std::thread([this]() {
+        while (m_watchdogRunning.load(std::memory_order_acquire) && !m_stopRequested.load(std::memory_order_acquire))
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            if (!m_watchdogRunning.load(std::memory_order_acquire) || m_stopRequested.load(std::memory_order_acquire))
+                break;
+
+            if (m_running.load(std::memory_order_acquire))
+            {
+                const int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count();
+                const int64_t lastMs = m_lastProgressMs.load(std::memory_order_acquire);
+                if (nowMs - lastMs >= static_cast<int64_t>(m_watchdogTimeoutSeconds) * 1000)
+                {
+                    // Stall detected!
+                    uint32_t activePc = 0, sp = 0, ra = 0;
+                    GuestThread *curr = currentThread();
+                    if (curr)
+                    {
+                        const auto &ctx = curr->activeContext();
+                        activePc = ctx.pc;
+                        sp = static_cast<uint32_t>(_mm_extract_epi32(ctx.r[29], 0));
+                        ra = static_cast<uint32_t>(_mm_extract_epi32(ctx.r[31], 0));
+                    }
+                    dumpStallReport(activePc, sp, ra);
+                    std::_Exit(124);
+                }
+            }
+        }
+    });
+}
+
+void EeScheduler::stopWatchdog()
+{
+    if (m_watchdogRunning.exchange(false, std::memory_order_acq_rel))
+    {
+        if (m_watchdogThread.joinable())
+        {
+            if (m_watchdogThread.get_id() != std::this_thread::get_id())
+            {
+                m_watchdogThread.join();
+            }
+            else
+            {
+                m_watchdogThread.detach();
+            }
+        }
     }
 }

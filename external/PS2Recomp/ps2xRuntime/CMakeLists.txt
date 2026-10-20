@@ -408,6 +408,7 @@ add_library(ps2_runtime STATIC
     src/lib/vu/ps2_vu1_lower.cpp
     src/lib/vu/ps2_vu1_lift.cpp
     src/lib/games_database.cpp
+    src/lib/ps2_symbols.cpp
 )
 
 if(PS2X_ENABLE_RUNTIME_LOGS)

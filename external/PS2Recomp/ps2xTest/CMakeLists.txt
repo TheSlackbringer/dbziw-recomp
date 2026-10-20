@@ -98,9 +98,29 @@ if(COMMAND ps2x_stage_ffmpeg_runtime_dlls)
     ps2x_stage_ffmpeg_runtime_dlls(ps2x_tests)
 endif()
 
+add_executable(ps2x_watchdog_test
+    src/watchdog_test.cpp
+    $<TARGET_OBJECTS:ps2_test_function_table>
+)
+
+target_include_directories(ps2x_watchdog_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/ps2xRuntime/include
+)
+
+target_link_libraries(ps2x_watchdog_test PRIVATE
+    ps2_runtime
+)
+
+if(UNIX AND NOT APPLE)
+    target_link_libraries(ps2x_watchdog_test PRIVATE ${CMAKE_DL_LIBS})
+endif()
+
 include("${CMAKE_SOURCE_DIR}/ps2xRuntime/cmake/ReleaseMode.cmake")
 
 if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
     EnableFastReleaseMode(ps2_test_lib)
     EnableFastReleaseMode(ps2x_tests)
+    EnableFastReleaseMode(ps2x_watchdog_test)
 endif()
+

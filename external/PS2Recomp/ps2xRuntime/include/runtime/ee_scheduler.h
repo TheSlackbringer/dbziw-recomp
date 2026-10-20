@@ -368,6 +368,11 @@ public:
     [[nodiscard]] EeKernelSnapshot snapshot() const;
     void publishSnapshot();
 
+    void startWatchdog();
+    void stopWatchdog();
+    void pokeWatchdog() noexcept;
+    void dumpStallReport(uint32_t activePc, uint32_t sp, uint32_t ra);
+
 private:
     struct ScheduledEvent
     {
@@ -474,4 +479,9 @@ private:
     mutable std::mutex m_snapshotMutex;
     EeKernelSnapshot m_snapshot;
     uint64_t m_snapshotSequence = 0;
+
+    std::atomic<int64_t> m_lastProgressMs{0};
+    std::atomic<bool> m_watchdogRunning{false};
+    std::thread m_watchdogThread;
+    int m_watchdogTimeoutSeconds = 0;
 };

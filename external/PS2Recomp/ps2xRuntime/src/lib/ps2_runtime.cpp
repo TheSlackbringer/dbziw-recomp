@@ -18,6 +18,18 @@
 #include "rlgl.h"
 #include "ps2_iop_host.h"
 #include "ps2x/iop/iop_subsystem.h"
+#include "runtime/ps2_symbols.h"
+#include <csignal>
+
+static void ps2CrashSignalHandler(int sig)
+{
+    std::fprintf(stderr, "\n================================================================================\n");
+    std::fprintf(stderr, "[GUEST CRASH] Fatal signal %d (%s) caught during execution!\n",
+                 sig, sig == SIGSEGV ? "SIGSEGV" : (sig == SIGBUS ? "SIGBUS" : "FATAL"));
+    std::fprintf(stderr, "================================================================================\n");
+    std::fflush(stderr);
+    std::_Exit(139);
+}
 
 #include <iostream>
 #include <stdexcept>
@@ -1418,6 +1430,15 @@ bool PS2Runtime::initialize(const char *title)
 {
     try
     {
+        const char *crashEnv = std::getenv("PS2X_CRASH_HANDLER");
+        if (crashEnv && *crashEnv && *crashEnv != '0')
+        {
+            std::signal(SIGSEGV, ps2CrashSignalHandler);
+#ifdef SIGBUS
+            std::signal(SIGBUS, ps2CrashSignalHandler);
+#endif
+        }
+
         if (!m_memory.initialize())
         {
             std::cerr << "Failed to initialize PS2 memory" << std::endl;
