@@ -1,0 +1,11 @@
+{
+  "$schema": "https://recomp.fyi/schema/v1.json",
+  "game": "Dragon Ball Z: Infinite World",
+  "wikidata": "Q1837400",
+  "system": "PS2",
+  "type": "recomp",
+  "status": "in-progress",
+  "toolchain": "Ps2recomp",
+  "original": { "region": "Europe", "serial": "SLES-55347" },
+  "targets": ["Linux", "Windows"]
+}
