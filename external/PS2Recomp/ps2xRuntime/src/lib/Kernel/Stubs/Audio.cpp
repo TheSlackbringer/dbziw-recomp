@@ -1,5 +1,6 @@
 #include "Common.h"
 #include "Audio.h"
+#include "../../ps2_iop_transport.h"
 
 namespace ps2_stubs
 {
@@ -207,7 +208,38 @@ namespace ps2_stubs
 
     void sceSdTransToIOP(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        TODO_NAMED("sceSdTransToIOP", rdram, ctx, runtime);
+        const uint32_t src = getRegU32(ctx, 4);
+        const uint32_t dest = getRegU32(ctx, 5);
+        const uint32_t size = getRegU32(ctx, 6);
+        const uint32_t mode = getRegU32(ctx, 7);
+        (void)mode;
+
+        if (runtime && rdram && size > 0 && runtime->isIopMemoryRange(dest, size))
+        {
+            const uint8_t *srcPtr = getConstMemPtr(rdram, src);
+            if (srcPtr)
+            {
+                PS2IopTransport::notifyTransfer(runtime, rdram, {
+                    ps2x::iop::SifTransferKind::SetDma,
+                    ps2x::iop::SifTransferPhase::BeforeCopy,
+                    src,
+                    dest,
+                    size,
+                });
+
+                runtime->writeIopMemory(dest, srcPtr, size);
+
+                PS2IopTransport::notifyTransfer(runtime, rdram, {
+                    ps2x::iop::SifTransferKind::SetDma,
+                    ps2x::iop::SifTransferPhase::AfterCopy,
+                    src,
+                    dest,
+                    size,
+                });
+            }
+        }
+
+        setReturnS32(ctx, 1);
     }
 
     void sceSSyn_BreakAtick(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)

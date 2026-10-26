@@ -23,10 +23,10 @@ namespace ps2x::iop::detail
         static constexpr uint32_t Spu2End = 0x1FA00000u;
         static constexpr uint32_t SifBase = 0x1D000000u;
         static constexpr uint32_t SifEnd = 0x1D001000u;
-        // IRX modules load from 0x10000 upward (kModuleLoadBase); KF4's nine
-        // modules end below 0x60000. The heap starts above that and runs up to
-        // the emulator's call-stack area.
-        static constexpr uint32_t HeapBase = 0x00080000u;
+        // IRX modules load from 0x10000 upward (kModuleLoadBase).
+        // DBZIW loads 11 large modules (CRI ADX, LIBSD, MCMAN, PADMAN, etc).
+        // Set HeapBase to 1MB (0x100000) so modules have 960KB and heap has 960KB.
+        static constexpr uint32_t HeapBase = 0x00100000u;
         static constexpr uint32_t HeapLimit = 0x001F0000u;
 
         struct Allocation

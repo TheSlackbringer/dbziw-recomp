@@ -136,13 +136,9 @@ namespace ps2_syscalls
         {
         case 1: // sceDeci2Open(protocol, opt, handler)
         {
-            const uint16_t protocol = static_cast<uint16_t>(args[0] & 0xFFFFu);
-            const uint32_t opt = args[1];
-            const uint32_t handler = args[2];
-            const uint32_t userArea = args[3];
-
-            const int32_t socket = allocateDeci2Socket(protocol, opt, handler, userArea);
-            setReturnS32(ctx, socket);
+            // Retail consoles have no DECI2 debugger attached.
+            // Returning KE_ERROR prevents guest TTY drivers from hanging in sceDeci2Poll.
+            setReturnS32(ctx, KE_ERROR);
             return;
         }
         case 2: // sceDeci2Close(socket)

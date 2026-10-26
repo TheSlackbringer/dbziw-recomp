@@ -1448,6 +1448,87 @@ namespace
         return 0;
     }
 
+    int32_t submitDmaRecv(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, bool preferNormalCount)
+    {
+        if (!runtime)
+        {
+            return -1;
+        }
+
+        const uint32_t chanArg = getRegU32(ctx, 4);
+        const uint32_t payloadArg = getRegU32(ctx, 5);
+        const uint32_t countArg = getRegU32(ctx, 6);
+        const uint32_t channelBase = resolveDmaChannelBase(rdram, chanArg);
+        if (channelBase == 0)
+        {
+            return -1;
+        }
+
+        const uint32_t payloadPhys = toDmaPhys(payloadArg);
+        uint32_t madr = 0;
+        uint32_t qwc = 0;
+        uint32_t tadr = payloadPhys;
+        PS2Memory &mem = runtime->memory();
+
+        const uint32_t configuredChcr = mem.readIORegister(channelBase + 0x00u);
+        const uint32_t transferTagEnable = configuredChcr & 0x00000040u;
+        uint32_t chcr = 0x00000180u | transferTagEnable; // DIR=0 (to memory), TIE=1, STR=1.
+
+        if (preferNormalCount)
+        {
+            qwc = normalizeQwcFromArg(countArg);
+            madr = payloadPhys;
+        }
+        else
+        {
+            chcr = 0x00000184u | transferTagEnable; // MODE=1 chain, DIR=0, TIE=1, STR=1.
+        }
+
+        mem.writeIORegister(channelBase + 0x20u, qwc & 0xFFFFu);
+        mem.writeIORegister(channelBase + 0x10u, madr);
+        mem.writeIORegister(channelBase + 0x30u, tadr);
+        mem.writeIORegister(channelBase + 0x00u, chcr);
+        mem.processPendingTransfers();
+
+        std::vector<uint32_t> completedCauses = mem.consumeCompletedDmacCauses();
+        const bool completionDeferred = ps2x::device::hasDeferredChannel(mem, channelBase);
+        if (completedCauses.empty() && !completionDeferred &&
+            (mem.readIORegister(channelBase + 0x00u) & 0x100u) == 0u)
+        {
+            if (channelBase == 0x10008000u) completedCauses.push_back(0u);
+            else if (channelBase == 0x10009000u) completedCauses.push_back(1u);
+            else if (channelBase == 0x1000A000u) completedCauses.push_back(2u);
+            else if (channelBase == 0x1000B000u) completedCauses.push_back(3u);
+            else if (channelBase == 0x1000B400u) completedCauses.push_back(4u);
+            else if (channelBase == 0x1000C000u) completedCauses.push_back(5u);
+            else if (channelBase == 0x1000C400u) completedCauses.push_back(6u);
+            else if (channelBase == 0x1000C800u) completedCauses.push_back(7u);
+            else if (channelBase == 0x1000D000u) completedCauses.push_back(8u);
+            else if (channelBase == 0x1000D400u) completedCauses.push_back(9u);
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(g_dmaStubMutex);
+            g_dmaPendingPolls[channelBase] = 1;
+            if (g_dmaStubLogCount < kMaxDmaStubLogs)
+            {
+                RUNTIME_LOG("[sceDmaRecv] ch=0x" << std::hex << channelBase
+                                                 << " madr=0x" << madr
+                                                 << " qwc=0x" << qwc
+                                                 << " tadr=0x" << tadr
+                                                 << " chcr=0x" << chcr << std::dec << std::endl);
+                ++g_dmaStubLogCount;
+            }
+        }
+
+        for (const uint32_t completedCause : completedCauses)
+        {
+            ps2_syscalls::dispatchDmacHandlersForCause(rdram, runtime, completedCause);
+        }
+
+        return 0;
+    }
+
     int32_t submitDmaSync(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         if (!runtime)

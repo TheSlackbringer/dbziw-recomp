@@ -38,6 +38,14 @@ public:
         return runtime && runtime->hasEmulatedIopRpcServer(sid);
     }
 
+    static void advanceCycles(PS2Runtime *runtime, uint64_t eeCycles)
+    {
+        if (runtime)
+        {
+            runtime->advanceIopEeCycles(eeCycles);
+        }
+    }
+
     static void notifyTransfer(
         PS2Runtime *runtime,
         uint8_t *rdram,

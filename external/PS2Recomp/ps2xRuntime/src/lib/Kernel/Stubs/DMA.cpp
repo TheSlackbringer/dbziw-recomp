@@ -174,17 +174,17 @@ namespace ps2_stubs
 
     void sceDmaRecv(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        TODO_NAMED("sceDmaRecv", rdram, ctx, runtime);
+        setReturnS32(ctx, submitDmaRecv(rdram, ctx, runtime, false));
     }
 
     void sceDmaRecvI(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        TODO_NAMED("sceDmaRecvI", rdram, ctx, runtime);
+        setReturnS32(ctx, submitDmaRecv(rdram, ctx, runtime, false));
     }
 
     void sceDmaRecvN(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        TODO_NAMED("sceDmaRecvN", rdram, ctx, runtime);
+        setReturnS32(ctx, submitDmaRecv(rdram, ctx, runtime, true));
     }
 
     void sceDmaReset(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)

@@ -333,7 +333,17 @@ namespace ps2_syscalls
             g_rpc_clients[clientPtr].sid = rpcId;
         }
 
-        if (!serverPtr && PS2IopTransport::canBindRpc(runtime, rpcId))
+        bool canBind = PS2IopTransport::canBindRpc(runtime, rpcId);
+        if (!serverPtr && !canBind && (mode & 1) == 0 && runtime)
+        {
+            for (int retry = 0; retry < 50 && !canBind; ++retry)
+            {
+                PS2IopTransport::advanceCycles(runtime, 200000);
+                canBind = PS2IopTransport::canBindRpc(runtime, rpcId);
+            }
+        }
+        std::fprintf(stderr, "[EE:rpc] SifBindRpc client=0x%x sid=0x%x canBind=%d serverPtr=0x%x\n", clientPtr, rpcId, canBind ? 1 : 0, serverPtr);
+        if (!serverPtr && canBind)
         {
             // EE-side servers and HLE routes need a descriptor in guest RAM.
             // With an emulated IOP, only publish it after the IRX has actually
