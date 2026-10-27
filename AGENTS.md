@@ -7,10 +7,13 @@ appdata. Goal: full game playable natively at 60 FPS (PAL60) and 50 FPS (PAL50),
 instant loading, sub-frame input response (gamepad/fightstick), CRI ADX audio and Sofdec SFD cutscene playback, and zero
 emulation overhead. GitHub: TheSlackbringer/dbziw-port.
 
-Read first: this file → `notes/issues/README.md` (local: index, "Waiting for you", working agreement) → the current
-issue's `spec.md` and `work.md`. Setup/build commands: "Essentials" in this file. Look-ups (repo map, debug switches,
-Ghidra, PCSX2, record/replay, pitfalls): "Reference" at the end of this file. Lineage: the runtime and way of working
-come from `../dw5-ps2` (forked at about DW5 `438a3de`, 2026-10-20); later DW5 fixes arrive through issues 007 and 010–016.
+Read first: this file → `notes/issues/README.md` (local: index, "Waiting for you", working agreement; its first line
+points to the private `notes/AGENTS.md`) → `notes/issues/ORDER.md` (the agreed order and the DBZIW ↔ DW5 number key) →
+the current issue's `spec.md` and `work.md`. Setup/build commands: "Essentials" in this file. Look-ups (repo map,
+debug switches, Ghidra, PCSX2, record/replay, pitfalls): "Reference" at the end of this file. Lineage: the runtime and
+way of working come from `../dw5-ps2` (forked at about DW5 `438a3de`, 2026-10-20); later DW5 work arrives through the
+issues in `ORDER.md`'s number key (DW5 issues are always written "DW5 NNN"; the two series overlap).
+
 Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
 
 ## Hard rules (2026-10-19 — after an agent weakened tests to make them pass)
@@ -32,7 +35,8 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
   100% covered by automated tests, the Maintainer test is explicitly "None (fully automated)".
 - **Pushing requires permission:** push only after the user agreed to that push.
 - Changes to `notes/` are tracked in its own local git repo (`git -C notes log`); commit your notes changes there.
-- Before relying on the game files, verify them: `game/SLES_553.47` must match the player's legally dumped retail disc (PAL v1.00).
+- Before relying on the game files, verify them: `game/SLES_553.47` must match the player's legally dumped retail disc (PAL v1.00)
+  (a checksum check like DW5's `notes/tools/check_game_files.sh`: *planned: 017*).
 
 ## Working agreement (2026-10-16)
 1. **One folder per issue**, `notes/issues/NNN-short-name/` (local, never committed; templates in `notes/issues/`):
@@ -46,6 +50,9 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
      (`git -C ../dw5-ps2 log -1 <sha>`; is it before or after the fork?).
    - `work.md` — stop/go milestones (not in the spec), all your findings, progress, measurements, conclusion, fix
      (commit) and history, kept current. Findings never live only in chat.
+   - **Order and ownership (user, 2026-10-27):** each spec appears once in `notes/issues/ORDER.md` and is done whole;
+     a part that must happen at another time becomes a new spec first (the one exception is written in ORDER.md).
+     Each test, tool or change has one owning spec; other specs use it and never port it again.
 2. **Spec approval before any work.** Draft the spec (fact-finding needed to write it is fine); the user approves.
    Push back with reasons when you think a spec is wrong; the user decides and can overrule. No fixes or experimental
    code changes without an approved spec. While away, the user can allow work on an unapproved spec — explicitly.
@@ -71,12 +78,13 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
    only after the user confirmed the issues in the batch and agreed to the push. Other commits only on command.
 6. **Stop/go:** split big work into milestones in `work.md`. User present: a two-line status per milestone, and an
    immediate report (with the alternative) when an approach doesn't pay off. User away: keep going, log milestones.
-7. **While the user is away** you may: work on approved specs in the agreed order; run automated tests off-screen;
-   update `work.md` and the index; prepare fixes up to "fixed — maintainer test" (commit "Fix #00N" only with explicit
-   prior permission); capture PCSX2 references (headless); create NEW issues (draft spec + findings) — but not fix
-   them. Wait for the user for: fixes without an approved spec, spec changes, pushing, any visible window or desktop
-   action, deleting outside your scratch space, downloads/installs/system settings, turning the PC off (only when
-   asked that time). Stuck: write it under "Waiting for you" and continue with the next approved issue.
+7. **While the user is away** you may: work on approved specs in the agreed order (`notes/issues/ORDER.md`); run
+   automated tests off-screen; update `work.md` and the index; prepare fixes up to "fixed — maintainer test" (commit
+   "Fix #00N" only with explicit prior permission); capture PCSX2 references (headless); create NEW issues (draft spec
+   + findings) — but not fix them. Wait for the user for: fixes without an approved spec, spec changes, pushing, any
+   visible window or desktop action, deleting outside your scratch space, downloads/installs/system settings, turning
+   the PC off (only when asked that time). Stuck: write it under "Waiting for you" and continue with the next approved
+   issue.
 
 ## Rules
 - **NEVER ASSUME — ask the user, with a recommendation.** Need something opened, switched, installed or done
@@ -145,7 +153,12 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
 - **Parallel agents** get self-contained briefs and do analysis/patch-writing in their own worktree or scratch dir
   (Ghidra on their own copy); one integrator builds and runs the game. Each worktree gets its own `app/build-<task>`.
 - **Never delete build dirs containing `_deps`;** no `rm` with bare shell variables (use `"${VAR:?}"`).
-- Keep `AGENTS.md` current when rules or the way of working change. Check usage
+- **Test runs never change your settings or saves:** scratch copies of the settings file (`PS2X_SETTINGS_FILE`,
+  *planned: 028*) and of the memory cards; check afterwards that yours are unchanged (DW5, 2026-10-22 and 2026-10-27).
+- **Runnable test scripts live in `notes/issues/tests/`,** never only in the session scratchpad, which gets wiped
+  (DW5, 2026-10-27).
+- Keep `AGENTS.md` current when rules or the way of working change: propose the change, and edit only with the
+  user's permission for that edit (DW5's rule). Private rules go to `notes/AGENTS.md`, never here. Check usage
   before expensive batches; at ≤10 % left, checkpoint (`work.md`, index) before continuing.
 
 ## Essentials
@@ -153,8 +166,11 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
   Regenerate code: `tools/regen.sh` (needs the player's disc in `game/`). CTests: `cd app/build && ctest`.
 - **Preflight before any timing or play run:** `PS2X_ENABLE_AGRESSIVE_LOGS:BOOL=OFF` in the build tree's
   `CMakeCache.txt`, 0 `PS2_FUNCTION_LOG_TRACKER` in `compile_commands.json`, and no `ps2_log.txt` written (DW5 038:
-  a build with it ON writes GBs of log and runs in slow motion while `[hud]` still shows full FPS). On 2026-10-26
-  `app/build-mingw` had it ON (fix: issue 011).
+  a build with it ON writes GBs of log and runs in slow motion while `[hud]` still shows full FPS). Since 009,
+  `app/CMakeLists.txt:26` forces it OFF for game builds, but the runtime's own default is still ON for standalone
+  runtime/recompiler builds (`ps2xRuntime/CMakeLists.txt:14`; fix: issue 011), and `app/build-mingw` was configured
+  on 2026-10-20, before that, so its cache still says ON until it is reconfigured. An old `game/ps2_log.txt`
+  (2026-10-20) exists: check the file's time, not only that it exists.
 - Stub candidates: `tools/audit_stubs.py game/SLES_553.47 recomp/dbz_iw.toml`.
 - Run all fast checks plus checks relevant to the changed area (testing rule above). Available issue tiers:
   `run.py NNN|quick|standard|full`; recommend full after at least three specs are fixed and ask the user before running it.
@@ -200,7 +216,9 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
 Generated C++ registers every game function under its PS2 address; calls go through that table. Overrides (none
 yet) register per disc serial (`PS2_REGISTER_GAME_OVERRIDE(...)`, `ps2xRuntime/include/game_overrides.h`), verify the
 expected instruction, then `runtime.replaceFunction(addr, fn)`; `runtime.lookupFunction(addr)` returns the original so
-a replacement can wrap it. No mid-function hooks. Never patch disc files or generated output by hand.
+a replacement can wrap it. No mid-function hooks. Never patch disc files or generated output by hand. Only replace
+functions that never wait; a replacement may continue into another guest function by setting `ctx->pc` (DW5,
+2026-10-27). The bound `sceGsSyncPath` stub breaks this rule today (issue 027).
 
 ### Running the game by hand (prefer the issue tests and helpers)
 From `game`: `PS2X_GS_BACKEND=vulkan PS2X_HIDDEN=1 PS2X_GS_SCALE=1 PS2X_GS_SSAA=1 PULSE_SINK=dbziw_codex_tests
@@ -213,6 +231,10 @@ Arrows or WASD (D-pad / Left Stick). Leave ~100 ticks between menu presses.
 A host-input script disables real keyboard polling for the whole run: never set `PS2X_HOST_INPUT`/`PS2X_INPUT` for
 manual play. Silent sink missing after a reboot: `pactl load-module module-null-sink sink_name=dbziw_codex_tests`.
 Stop a game with `kill <pid>` (never `pkill -f dbziw` from a shell whose own command line contains that string).
+Known route until `dbztest.py` exists (017): `120:CROSS:5,400:CROSS:5,800:LEFT:5,850:CROSS:5,950:CROSS:5,1100:CROSS:5,
+1250:CROSS:5,1400:CROSS:5` passes language select, memory card check, the 50/60 Hz selector (PAL50 chosen) and
+the autosave warning; the opening movie starts at ~1790 (020 M1; checkpoint `notes/issues/tests/out/020-m1-probe/
+state_1780.bin`). Timeline (PAL50, 009): language select ~100, Bandai Namco 500–600, Dimps ~800, CRIWARE 1000–1200.
 Presented-window timing without touching the desktop: instead of `PS2X_HIDDEN=1`, prefix the game with
 `gamescope --backend headless -W 2560 -H 1440 -w 2560 -h 1440 -r 240 --` (example test display). Frame dumps are the
 presented frames (`frame_<tick>.png`); contact sheet:
@@ -244,9 +266,13 @@ Other: `PS2X_MPG_TRACE` · `PS2X_VIF1_CHAIN_TRACE` · `PS2X_RAM_DUMP_TICKS=t1,t2
 *Planned (not in the code yet):* `PS2X_VU0_LIFT`/`_VERIFY`/`PS2X_VU0_CENSUS` (012, only if VU0 microprograms run) ·
 `PS2X_STDIO_DIRECT=1` (bypass the log pump, 011) · `PS2X_PRESENT_STATS`, `PS2X_FIELD_SCANOUT=0`, `PS2X_WEAVE_TRACE`
 (013) · `PS2X_STATE_RESAVE=<file>` (016) · `PS2X_PROFILE_MARKERS=<file>` in `-DDBZIW_DEVELOPER_DIAGNOSTICS=ON`
-builds (010) · `PS2X_MUTE=1` (Windows test runs without a silent sink) · CRI/Sofdec/IPU traces (020) ·
+builds (010) · `PS2X_MUTE=1` (Windows test runs without a silent sink, 011) · `PS2X_SETTINGS_FILE` (028) ·
+CRI/Sofdec/IPU traces (020) ·
 `PS2X_PAD_TRACE` (021) · `PS2X_STATE_HASH=<file>` (022).
-Profiling: `perf` and `gprofng` are installed on the Linux test machine; the non-pausing toolkit is issue 010.
+Profiling: `perf` and `gprofng` are installed on the Linux test machine; the non-pausing toolkit is issue 010. The
+profiler is a debugging tool, never a test: a profiled run never decides a pass or fail or a timing acceptance, and
+its own tests are not in CI or the `run.py` tiers (DW5, 2026-10-22). Who-woke-whom stacks on Linux need a temporary
+kernel setting (`perf_event_paranoid`): a system setting only the user changes.
 
 ### Comparing with the original (PCSX2)
 `tools/pcsx2_reference.py --out <scratch> --seconds <n> [--interval 0.5] [--keys "<sec>:<keysym>,..."]`
@@ -276,6 +302,7 @@ renderer fixes are runtime patches in `vendor/parallel-gs-patches/`.
   `analyzeHeadless <dir> dbziw -process SLES_553.47 -noanalysis -readOnly -scriptPath tools/ghidra_scripts -postScript DecompileAt.java 0xADDR ...`,
   then delete the copy.
 - Quick look at one function: the generated `recomp/output/*_0x<addr>.cpp` comments every instruction.
+- IOP module bases at run time (Ghidra addresses are module-relative), known so far: `CRI_ADXI.IRX` 0x16a00 (020 M1).
 
 ### Pitfalls
 - **Metrowerks CodeWarrior 2.4.1.01 peculiarities:** Dimps compiled Infinite World with Metrowerks CodeWarrior rather than
@@ -287,9 +314,10 @@ renderer fixes are runtime patches in `vendor/parallel-gs-patches/`.
   from the game's `SetGsCrt` (mode 3 = PAL; only modes 2/3 are recognised); the scanout guesses PAL from picture height.
   VSync cadence, CD stream rate, movies and IOP timing must all follow the selected mode (issue 019).
 - **CRI ADX audio & Sofdec SFD video:** Infinite World relies heavily on CRI middleware (`CRI_ADXI.IRX`, AFS archives,
-  and SFD video streams). Data transfer from IOP to EE streaming buffers must not starve or hitch. Sofdec uses the
-  IPU hardware, not libmpeg, and the runtime's IPU is register-level only (issue 020). `Stubs/IPU.cpp` contains another
-  game's fixed addresses: never bind it for DBZIW.
+  and SFD video streams). Data transfer from IOP to EE streaming buffers must not starve or hitch. Sofdec runs on top
+  of Sony's libmpeg and libipu (native game code, unbound), which drive the IPU hardware; the runtime's IPU is
+  register-level only (issue 020, corrected by 020 M1). `Stubs/IPU.cpp` and `Stubs/MPEG.cpp` contain other games'
+  fixed addresses (`MPEG.cpp` writes DW5's): never bind them for DBZIW.
 - **Combat frame cancellation and juggle physics:** Dimps fighter mechanics (cancels, Aura Bursts, fatigue meters) rely on
   exact frame windows. Timing hacks or sleeps will desync combat physics and break combos.
 - **Keep `[patches]` in `dbz_iw.toml` empty:** `ps2_analyzer` falsely flags ordinary stores as self-modifying code.
@@ -302,6 +330,8 @@ renderer fixes are runtime patches in `vendor/parallel-gs-patches/`.
   020 `BC2F`/`BC2T`). DBZIW uses VU0 macro mode heavily.
 - **IOP RPC server functions run outside any IOP thread;** blocking waits there need the host-wait pump (DW5 004).
 - **IOP time follows the host clock** (`iop_emulator.cpp` catch-up), so two runs of the same build can diverge (issue 022).
+- **The async device worker is off by default** since 009 (`PS2X_VU1_ASYNC=0`, also forced in `run.py`) after a freeze
+  in the bound `sceGsSyncPath`; DW5's speed relies on it being on (issue 027).
 - **Never measure stutter with frame dumps on** (PNG dumps cause 40 ms hitches and can hide timing races); the
   overlay/`[hud]` VSync figure reads 48–51 by aliasing even when pacing is perfect — use late fields and game FPS.
 - **Lifted VU1 code must stay cycle-exact** with the interpreter (Q/flag/XGKICK timing is observable by the game).
