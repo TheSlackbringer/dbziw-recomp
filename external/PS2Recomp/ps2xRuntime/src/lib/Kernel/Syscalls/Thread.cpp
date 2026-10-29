@@ -113,7 +113,7 @@ namespace ps2_syscalls
             const int priority = static_cast<int>(getRegU32(ctx, 5));
             int oldPriority = 0;
             const int result = ee.changePriority(id, priority, interruptSafe, oldPriority);
-            setReturnS32(ctx, result);
+            setReturnS32(ctx, result == KE_OK ? oldPriority : result);
             ee.transferIfRequested(interruptSafe);
         }
 
@@ -320,19 +320,23 @@ namespace ps2_syscalls
         setReturnS32(ctx, result);
     }
 
+    // The EE kernel returns the thread id on success: CRI's ADXPS2 code (DBZIW FUN_001592b0) only continues when
+    // ResumeThread(id) == id (issue 020).
     void SuspendThread(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         EeScheduler &ee = scheduler(rdram, ctx, runtime);
-        const int result = ee.suspendThread(static_cast<int>(getRegU32(ctx, 4)), false);
-        setReturnS32(ctx, result);
+        const int id = static_cast<int>(getRegU32(ctx, 4));
+        const int result = ee.suspendThread(id, false);
+        setReturnS32(ctx, result == KE_OK ? id : result);
         ee.transferIfRequested(false);
     }
 
     void ResumeThread(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         EeScheduler &ee = scheduler(rdram, ctx, runtime);
-        const int result = ee.resumeThread(static_cast<int>(getRegU32(ctx, 4)), false);
-        setReturnS32(ctx, result);
+        const int id = static_cast<int>(getRegU32(ctx, 4));
+        const int result = ee.resumeThread(id, false);
+        setReturnS32(ctx, result == KE_OK ? id : result);
         ee.transferIfRequested(false);
     }
 

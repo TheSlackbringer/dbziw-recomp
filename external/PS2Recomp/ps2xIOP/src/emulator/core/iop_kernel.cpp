@@ -4,6 +4,8 @@
 #include "../iop_emulator_const.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 
 namespace ps2x::iop::detail
 {
@@ -395,6 +397,10 @@ namespace ps2x::iop::detail
             }
             if (it->second.current < it->second.maximum)
                 ++it->second.current;
+            static const char *semaTrace = std::getenv("PS2X_IOP_SEMA_TRACE"); // DBZIW-DEBUG (issue 020): sema id
+            if (semaTrace && std::atoi(semaTrace) == id)
+                std::fprintf(stderr, "[iop-sema] signal id=%d ordinal=%u ra=0x%x current=%d\n", id, ordinal,
+                             cpu.gpr[31], it->second.current);
             wakeOneSemaphore(id);
             setV0(0);
             return true;
@@ -734,6 +740,19 @@ namespace ps2x::iop::detail
         return next;
     }
 
+    IopThread *IopKernel::continueThread(int id)
+    {
+        const auto found = m_threads.find(id);
+        if (found == m_threads.end() || found->second.state != IopThreadState::Ready)
+            return nullptr;
+        IopThread &thread = found->second;
+        m_currentThread = &thread;
+        thread.state = IopThreadState::Running;
+        thread.cpu.stopped = false;
+        thread.cpu.yielded = false;
+        return &thread;
+    }
+
     uint64_t IopKernel::nextWakeCycle(uint64_t fallback) const
     {
         uint64_t nextWake = fallback;
@@ -793,5 +812,27 @@ namespace ps2x::iop::detail
                 m_hasDeadThreads = true;
             }
         }
+    }
+
+    void IopKernel::dumpThreads(uint64_t cycle) const // DBZIW-DEBUG (issue 020)
+    {
+        static const char *const kStates[] = {"dormant", "ready", "running", "sleep", "delay", "sema", "evflag", "suspend", "dead"};
+        std::fprintf(stderr, "[iop-threads] cycle=%llu intr=%u", static_cast<unsigned long long>(cycle),
+                     m_memory.interruptControl());
+        for (const auto &[id, thread] : m_threads)
+            std::fprintf(stderr, " | t%d %s pri=%u pc=0x%x ra=0x%x entry=0x%x wait=%d", id,
+                         kStates[std::min<size_t>(static_cast<size_t>(thread.state), 8u)], thread.priority, thread.cpu.pc,
+                         thread.cpu.gpr[31], thread.entry, thread.waitId);
+        static const char *watch = std::getenv("PS2X_IOP_WATCH"); // comma-separated IOP addresses (words)
+        for (const char *p = watch; p && *p;)
+        {
+            char *end = nullptr;
+            const uint32_t address = static_cast<uint32_t>(std::strtoul(p, &end, 0));
+            if (end == p)
+                break;
+            std::fprintf(stderr, " | [0x%x]=0x%08x", address, m_memory.read32(address));
+            p = (*end == ',') ? end + 1 : end;
+        }
+        std::fprintf(stderr, "\n");
     }
 }

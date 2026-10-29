@@ -741,6 +741,28 @@ namespace ps2_stubs
                 std::fprintf(stderr, "\n");
             }
         }
+        static const bool sifTrace = std::getenv("PS2X_SIF_TRACE") != nullptr; // DBZIW-DEBUG (issue 020): EE -> IOP SIF DMA
+        if (sifTrace)
+        {
+            for (uint32_t i = 0; i < count; ++i)
+            {
+                const uint32_t desc = dmatAddr + i * 16;
+                std::fprintf(stderr, "[sif:setdma] i=%u/%u src=0x%08x dst=0x%08x size=0x%x attr=0x%x\n",
+                             i, count, READ32(desc), READ32(desc + 4), READ32(desc + 8), READ32(desc + 12));
+                // DBZIW-DEBUG: CRI DTX blocks (0x880 bytes: count word, then 16-byte messages from +0x10)
+                const uint32_t src = READ32(desc);
+                const uint32_t messages = READ32(src);
+                if (READ32(desc + 8) == 0x880u && messages != 0u)
+                {
+                    for (uint32_t m = 0; m < messages && m < 8u; ++m)
+                    {
+                        const uint32_t msg = src + 0x10u + m * 16u;
+                        std::fprintf(stderr, "[sif:dtx] dst=0x%08x n=%u #%u %08x %08x %08x %08x\n", READ32(desc + 4), messages, m,
+                                     READ32(msg), READ32(msg + 4), READ32(msg + 8), READ32(msg + 12));
+                    }
+                }
+            }
+        }
 
         std::array<Ps2SifDmaTransfer, 32u> pending{};
         uint32_t pendingCount = 0u;

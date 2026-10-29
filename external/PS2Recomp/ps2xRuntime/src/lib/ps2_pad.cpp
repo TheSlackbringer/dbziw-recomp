@@ -236,7 +236,7 @@ namespace ps2_host_input
         bind(key(KEY_DOWN, "DOWN") || key(KEY_S, "S"), PAD_DOWN);
         bind(key(KEY_LEFT, "LEFT"), PAD_LEFT);
         bind(key(KEY_RIGHT, "RIGHT"), PAD_RIGHT);
-        bind(key(KEY_ENTER, "ENTER"), PAD_START);
+        bind(key(KEY_ENTER, "ENTER") || key(KEY_ENTER, "START"), PAD_START);
         if (verdite)
         {
             bind(key(KEY_A, "A"), PAD_L1);
@@ -251,15 +251,15 @@ namespace ps2_host_input
         {
             bind(key(KEY_A, "A"), PAD_LEFT);
             bind(key(KEY_D, "D"), PAD_RIGHT);
-            bind(key(KEY_X, "X") || key(KEY_SPACE, "SPACE"), PAD_CROSS);
-            bind(key(KEY_C, "C") || key(KEY_ESCAPE, "ESCAPE"), PAD_CIRCLE);
-            bind(key(KEY_Z, "Z") || key(KEY_KP_0, "KP0"), PAD_SQUARE);
-            bind(key(KEY_V, "V") || key(KEY_KP_1, "KP1"), PAD_TRIANGLE);
-            bind(key(KEY_Q, "Q"), PAD_L1);
-            bind(key(KEY_E, "E"), PAD_R1);
-            bind(key(KEY_LEFT_SHIFT, "LEFTSHIFT"), PAD_L2);
-            bind(key(KEY_RIGHT_SHIFT, "RIGHTSHIFT"), PAD_R2);
-            bind(key(KEY_TAB, "TAB"), PAD_SELECT);
+            bind(key(KEY_X, "X") || key(KEY_SPACE, "SPACE") || key(KEY_X, "CROSS"), PAD_CROSS);
+            bind(key(KEY_C, "C") || key(KEY_ESCAPE, "ESCAPE") || key(KEY_C, "CIRCLE"), PAD_CIRCLE);
+            bind(key(KEY_Z, "Z") || key(KEY_KP_0, "KP0") || key(KEY_Z, "SQUARE"), PAD_SQUARE);
+            bind(key(KEY_V, "V") || key(KEY_KP_1, "KP1") || key(KEY_V, "TRIANGLE"), PAD_TRIANGLE);
+            bind(key(KEY_Q, "Q") || key(KEY_Q, "L1"), PAD_L1);
+            bind(key(KEY_E, "E") || key(KEY_E, "R1"), PAD_R1);
+            bind(key(KEY_LEFT_SHIFT, "LEFTSHIFT") || key(KEY_LEFT_SHIFT, "L2"), PAD_L2);
+            bind(key(KEY_RIGHT_SHIFT, "RIGHTSHIFT") || key(KEY_RIGHT_SHIFT, "R2"), PAD_R2);
+            bind(key(KEY_TAB, "TAB") || key(KEY_TAB, "SELECT"), PAD_SELECT);
         }
 
         int gamepad = -1;

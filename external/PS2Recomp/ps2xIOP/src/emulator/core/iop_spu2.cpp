@@ -584,11 +584,15 @@ namespace ps2x::iop::detail
             ++stats.frames;
             if (pcm.size() == 512)
                 flush();
-            if (trace && stats.frames % 48000 == 0)
-                std::fprintf(stderr, "[SPU2] frames=%llu nonzero=%llu keys=%llu blocks=%llu dmaBytes=%llu attr=%04X/%04X mmix=%04X/%04X\n",
+            if (trace && stats.frames % 48000 == 0) // DBZIW-DEBUG (issue 020): ext/master levels added
+                std::fprintf(stderr, "[SPU2] frames=%llu nonzero=%llu keys=%llu blocks=%llu dmaBytes=%llu attr=%04X/%04X mmix=%04X/%04X ext0_in=%04X/%04X ext1_ext=%04X/%04X ml0=%d/%d ml1=%d/%d in0_sz=%zu\n",
                              static_cast<unsigned long long>(stats.frames), static_cast<unsigned long long>(stats.nonzeroFrames),
                              static_cast<unsigned long long>(stats.keyOns), static_cast<unsigned long long>(stats.decodedBlocks),
-                             static_cast<unsigned long long>(stats.dmaBytes), reg(0, Attr), reg(1, Attr), reg(0, 0x198), reg(1, 0x198));
+                             static_cast<unsigned long long>(stats.dmaBytes), reg(0, Attr), reg(1, Attr), reg(0, 0x198), reg(1, 0x198),
+                             ext(0, 0xc), ext(0, 0xe), ext(1, 8), ext(1, 10),
+                             cores[0].masterLeft.level, cores[0].masterRight.level,
+                             cores[1].masterLeft.level, cores[1].masterRight.level,
+                             cores[0].input.size());
             if (trace && stats.frames % 48000 == 0) // DW5XL-DEBUG
                 std::fprintf(stderr, "[SPU2] pio=%llu/%llu tsa=%05X/%05X\n", pioWrites[0], pioWrites[1], address(0, Tsa), address(1, Tsa)),
                 [&] { // DW5XL-DEBUG: non-plain ADPCM block flags in the core1 stream ring
@@ -747,9 +751,13 @@ namespace ps2x::iop::detail
         if (toSpu) ++impl.stats.dmaWrites;
         else ++impl.stats.dmaReads;
         impl.stats.dmaBytes += static_cast<uint64_t>(words) * 4;
-        if (impl.trace)
-            std::fprintf(stderr, "[SPU2] dma core=%u direction=%s words=%u tsa=%05X auto=%u queued=%zu\n",
-                         core, toSpu ? "write" : "read", words, start, state.dmaAuto, state.input.size());
+        if (impl.trace) // DBZIW-DEBUG (issue 020): nonzero byte count
+        {
+            uint32_t nz = 0;
+            for (uint32_t i = 0; i < words * 4; ++i) if (data[i]) ++nz;
+            std::fprintf(stderr, "[SPU2] dma core=%u direction=%s words=%u tsa=%05X auto=%u queued=%zu nzBytes=%u/%u d0=%02X d1=%02X\n",
+                         core, toSpu ? "write" : "read", words, start, state.dmaAuto, state.input.size(), nz, words * 4, data[0], data[1]);
+        }
     }
     uint64_t IopSpu2::dmaCompletionCycles(unsigned core, uint32_t words) const
     {

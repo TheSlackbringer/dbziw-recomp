@@ -43,6 +43,8 @@ namespace ps2x::iop::detail
         uint32_t waitMode = 0;
         uint32_t waitResultAddress = 0;
         int wakeupCount = 0;
+        // The IOP keeps the interrupt enable bit in each thread's saved status register (issue 020).
+        uint32_t interruptControl = 1u;
     };
 
     class IopKernel
@@ -63,12 +65,16 @@ namespace ps2x::iop::detail
         void delayCurrentUntil(uint64_t wakeCycle, IopCpuState &cpu);
 
         [[nodiscard]] IopThread *beginNextReady(uint64_t currentCycle);
+        // Keeps thread `id` on the CPU for another timeslice when it is still Ready (it has interrupts disabled, so
+        // nothing may preempt it); nullptr when it no longer exists or cannot run.
+        [[nodiscard]] IopThread *continueThread(int id);
         [[nodiscard]] uint64_t nextWakeCycle(uint64_t fallback) const;
         void endTimeslice(IopThread &thread, uint32_t returnSentinel);
         void cleanupDeadThreads();
         void terminateThreadsInRange(uint32_t base, uint32_t size);
 
         [[nodiscard]] size_t threadCount() const noexcept { return m_threads.size(); }
+        void dumpThreads(uint64_t cycle) const; // DBZIW-DEBUG (issue 020): PS2X_IOP_THREAD_TRACE
 
         // Runs other IOP threads for one scheduling slice on behalf of guest code executing outside
         // any IOP thread (an RPC server function called by the host). Returns whether any IOP thread

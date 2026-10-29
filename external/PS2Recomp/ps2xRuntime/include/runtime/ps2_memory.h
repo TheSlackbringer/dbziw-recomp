@@ -314,6 +314,16 @@ public:
     void creditIpuInputBytes(uint64_t byteCount);
     void resetIpuInputConsumption() noexcept;
 
+    // A native decoder standing in for the IPU (issue 020) reports the input FIFO state that guest code reads back
+    // through IPU_BP and IPU_CTRL, and sees BCLR and reset so it resumes at the bit the guest restores.
+    struct IpuInputHook
+    {
+        virtual ~IpuInputHook() = default;
+        virtual uint32_t ipuBp() const = 0;      // IPU_BP: BP | IFC << 8 | FP << 16
+        virtual void ipuBclr(uint32_t bp) = 0;   // IPU_CMD BCLR, or IPU_CTRL reset (bp 0)
+    };
+    void setIpuInputHook(IpuInputHook *hook) noexcept { m_ipuInputHook = hook; }
+
     // EE timers advance from the scheduler's emulated EE-cycle clock. The
     // returned mask uses bits 0..3 for newly raised TIM0..TIM3 interrupts.
     uint32_t advanceEeTimers(uint64_t eeCycles) noexcept;
@@ -462,6 +472,7 @@ public:
     };
 
     std::array<EeTimer, 4> m_eeTimers{};
+    IpuInputHook *m_ipuInputHook = nullptr;
     uint64_t m_ipuInputCredit = 0u;
     bool m_ipuInputTagLoaded = false;
     bool m_ipuInputEndAfterPayload = false;

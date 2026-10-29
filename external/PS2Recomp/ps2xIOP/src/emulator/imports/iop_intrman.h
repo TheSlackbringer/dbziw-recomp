@@ -16,6 +16,7 @@ namespace ps2x::iop::detail
 
         void reset();
         [[nodiscard]] bool dispatchImport(uint16_t ordinal, IopCpuState &cpu, IopGuestExecutor &executor);
+        [[nodiscard]] bool dispatchImportImpl(uint16_t ordinal, IopCpuState &cpu, IopGuestExecutor &executor);
         [[nodiscard]] bool dispatchInterrupt(int irq, IopGuestExecutor &executor) const;
 
     private:
@@ -30,4 +31,5 @@ namespace ps2x::iop::detail
         std::map<int, Handler> m_handlers;
         std::map<int, bool> m_enabled;
     };
+    void dumpIntrHistory(); // DBZIW-DEBUG (issue 020)
 }

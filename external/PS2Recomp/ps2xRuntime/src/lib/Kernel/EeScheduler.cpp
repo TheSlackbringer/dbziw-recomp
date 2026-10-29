@@ -867,7 +867,7 @@ int EeScheduler::cancelWakeup(int id)
 int EeScheduler::changePriority(int id, int priority, bool interruptSafe, int &oldPriority)
 {
     assertExecutor();
-    if (priority < 1 || priority >= kPriorityCount)
+    if (priority < 0 || priority >= kPriorityCount)
     {
         return KE_ILLEGAL_PRIORITY;
     }
@@ -2134,6 +2134,11 @@ void EeScheduler::processDueDeadlines()
 static unsigned g_dw5xlCbQueued = 0; // DW5XL-DEBUG
 extern std::atomic<uint32_t> g_dw5xlMpegDemux, g_dw5xlMpegGetPic, g_dw5xlMpegPictures, g_dw5xlStrEvents[8];
 
+namespace ps2x_dev
+{
+    void stepInput(uint64_t tick);
+}
+
 void EeScheduler::processEvent(const EeEvent &event)
 {
     switch (event.type)
@@ -2143,6 +2148,7 @@ void EeScheduler::processEvent(const EeEvent &event)
         break;
     case EeEventType::VBlankStart:
         ++m_vsyncTick;
+        ps2x_dev::stepInput(m_vsyncTick);
         m_runtime.memory().vsyncTickNs().store(std::chrono::steady_clock::now().time_since_epoch().count(),
                                                   std::memory_order_relaxed);
         m_runtime.memory().gs().vsyncTick.store(m_vsyncTick, std::memory_order_release);

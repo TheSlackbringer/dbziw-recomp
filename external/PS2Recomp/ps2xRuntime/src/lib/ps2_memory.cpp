@@ -1245,11 +1245,15 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                 m_ioRegisters[0x10002020] = 0;
                 m_ioRegisters[0x10002030] = 0;
                 resetIpuInputConsumption();
+                if (m_ipuInputHook)
+                    m_ipuInputHook->ipuBclr(0u);
             }
         }
         else
         {
             m_ioRegisters[address] = value;
+            if (address == 0x10002000 && (value >> 28) == 0u && m_ipuInputHook)
+                m_ipuInputHook->ipuBclr(value & 0x7Fu);
         }
         return true;
     }
@@ -2790,8 +2794,12 @@ uint32_t PS2Memory::readIORegister(uint32_t address)
             break;
         case 0x10002010:
             val = m_ioRegisters[address] & ~(1u << 31);
+            if (m_ipuInputHook) // IFC from the native decoder; the output FIFO is always empty
+                val = (val & ~0xFFu) | ((m_ipuInputHook->ipuBp() >> 8u) & 0xFu);
             break;
         case 0x10002020:
+            val = m_ipuInputHook ? m_ipuInputHook->ipuBp() : m_ioRegisters[address];
+            break;
         case 0x10002030:
             val = m_ioRegisters[address];
             break;

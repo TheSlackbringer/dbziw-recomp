@@ -561,6 +561,97 @@ namespace
         std::memcpy(host.guest.data() + address + codeOffset, segment.data(), segment.size());
     }
 
+    // Issue 020: a thread that has disabled interrupts keeps the CPU. The high-priority thread's DelayThread wake-up
+    // is a timer interrupt on the IOP, so it may only run once the low thread has re-enabled interrupts.
+    void writeInterruptMaskSchedulingIrx(TestHost &host, uint32_t address)
+    {
+        constexpr uint32_t codeOffset = 0x100u;
+        constexpr uint32_t loadAddress = 0x00010000u;
+        constexpr uint32_t highThreadAddress = loadAddress + 0x100u;
+        constexpr uint32_t lowThreadAddress = loadAddress + 0x140u;
+        constexpr uint32_t thbaseTableAddress = loadAddress + 0x1C0u;
+        constexpr uint32_t createThreadStub = thbaseTableAddress + 20u;
+        constexpr uint32_t startThreadStub = createThreadStub + 8u;
+        constexpr uint32_t delayThreadStub = startThreadStub + 8u;
+        constexpr uint32_t intrmanTableAddress = loadAddress + 0x200u;
+        constexpr uint32_t suspendIntrStub = intrmanTableAddress + 20u;
+        constexpr uint32_t resumeIntrStub = suspendIntrStub + 8u;
+
+        ElfHeader header{};
+        header.ident[0] = 0x7Fu; header.ident[1] = 'E'; header.ident[2] = 'L'; header.ident[3] = 'F';
+        header.ident[4] = 1u; header.ident[5] = 1u; header.ident[6] = 1u;
+        header.type = 2u; header.machine = 8u; header.version = 1u;
+        header.entry = loadAddress; header.phoff = sizeof(ElfHeader);
+        header.ehsize = sizeof(ElfHeader); header.phentsize = sizeof(ProgramHeader); header.phnum = 1u;
+
+        ProgramHeader program{};
+        program.type = 1u; program.offset = codeOffset; program.vaddr = loadAddress; program.paddr = loadAddress;
+        program.filesz = 0x500u; program.memsz = 0x500u; program.flags = 7u; program.align = 4u;
+
+        const auto jal = [](uint32_t target) { return 0x0C000000u | ((target >> 2u) & 0x03FFFFFFu); };
+        const uint32_t entry[] = {
+            0x27BDFFE0u, 0xAFBF001Cu,
+            0x3C040001u, 0x34840300u, jal(createThreadStub), 0x00000000u,
+            0x00408021u, // move s0, v0
+            0x3C040001u, 0x34840320u, jal(createThreadStub), 0x00000000u,
+            0x00408821u, // move s1, v0
+            0x02002021u, 0x00002821u, jal(startThreadStub), 0x00000000u,
+            0x02202021u, 0x00002821u, jal(startThreadStub), 0x00000000u,
+            0x8FBF001Cu, 0x00001021u, 0x27BD0020u, 0x03E00008u, 0x00000000u,
+        };
+        const uint32_t highThread[] = {
+            0x240400C8u, jal(delayThreadStub), 0x00000000u, // DelayThread(200 us)
+            0x3C080001u, 0x35080400u,                       // t0 = 0x10400
+            0x8D090000u, 0x00000000u, 0xAD090004u,           // [0x10404] = [0x10400] (what the low thread had done)
+            0x240A0001u, 0xAD0A0008u,                       // [0x10408] = 1 (high thread ran)
+            0x03E00008u, 0x00000000u,
+        };
+        const uint32_t lowThread[] = {
+            0x27BDFFE0u, 0xAFBF001Cu,
+            0x27A40010u, jal(suspendIntrStub), 0x00000000u, // CpuSuspendIntr(&state)
+            0x34094E20u,                                    // t1 = 20000
+            0x2529FFFFu, 0x1520FFFEu, 0x00000000u,           // spin 60000 instructions, longer than the delay
+            0x3C080001u, 0x35080400u, 0x240A0001u, 0xAD0A0000u, // [0x10400] = 1 (critical section done)
+            0x8FA40010u, jal(resumeIntrStub), 0x00000000u,   // CpuResumeIntr(state)
+            0x8FBF001Cu, 0x27BD0020u, 0x03E00008u, 0x00000000u,
+        };
+        const uint32_t thbaseImports[] = {
+            0x41E00000u, 0u, 0x00000101u,
+            0x61626874u, 0x00006573u, // "thbase"
+            0x03E00008u, 0x24000004u, // CreateThread
+            0x03E00008u, 0x24000006u, // StartThread
+            0x03E00008u, 0x24000021u, // DelayThread
+            0u, 0u,
+        };
+        const uint32_t intrmanImports[] = {
+            0x41E00000u, 0u, 0x00000101u,
+            0x72746E69u, 0x006E616Du, // "intrman"
+            0x03E00008u, 0x24000011u, // CpuSuspendIntr
+            0x03E00008u, 0x24000012u, // CpuResumeIntr
+            0u, 0u,
+        };
+        const uint32_t highDescriptor[] = {0u, 0u, highThreadAddress, 0x400u, 10u};
+        const uint32_t lowDescriptor[] = {0u, 0u, lowThreadAddress, 0x400u, 20u};
+
+        std::vector<uint8_t> segment(program.filesz, 0u);
+        const auto put = [&](uint32_t offset, const void *data, size_t size)
+        {
+            std::memcpy(segment.data() + offset, data, size);
+        };
+        put(0u, entry, sizeof(entry));
+        put(0x100u, highThread, sizeof(highThread));
+        put(0x140u, lowThread, sizeof(lowThread));
+        put(0x1C0u, thbaseImports, sizeof(thbaseImports));
+        put(0x200u, intrmanImports, sizeof(intrmanImports));
+        put(0x300u, highDescriptor, sizeof(highDescriptor));
+        put(0x320u, lowDescriptor, sizeof(lowDescriptor));
+
+        std::memset(host.guest.data() + address, 0, codeOffset + program.filesz);
+        std::memcpy(host.guest.data() + address, &header, sizeof(header));
+        std::memcpy(host.guest.data() + address + sizeof(header), &program, sizeof(program));
+        std::memcpy(host.guest.data() + address + codeOffset, segment.data(), segment.size());
+    }
+
     void writeSifDmaIrx(TestHost &host, uint32_t address)
     {
         constexpr uint32_t codeOffset = 0x100u;
@@ -1050,6 +1141,19 @@ int main()
                 "Could not read the IOP scheduling marker")) return 1;
     if (!expect(lowPriorityMarker == 1u,
                 "WaitVblankEnd returned immediately and starved a lower-priority IOP thread")) return 1;
+
+    iop.reset();
+    writeInterruptMaskSchedulingIrx(host, 0x100u);
+    const ModuleLoadResult maskModule = iop.loadModuleBuffer(0x100u);
+    if (!expect(maskModule.handled && maskModule.startResult == 0,
+                "Synthetic interrupt-mask scheduling IRX did not start")) return 1;
+    iop.runEeCycles(8u * 1000000u);
+    uint32_t maskMarkers[3] = {};
+    if (!expect(iop.readMemory(0x00010400u, maskMarkers, sizeof(maskMarkers)),
+                "Could not read the interrupt-mask scheduling markers")) return 1;
+    if (!expect(maskMarkers[2] == 1u, "The high-priority IOP thread never ran after its delay")) return 1;
+    if (!expect(maskMarkers[1] == 1u,
+                "An IOP thread was preempted while it had interrupts disabled (CpuSuspendIntr)")) return 1;
 
     iop.reset();
     host.logs.clear();

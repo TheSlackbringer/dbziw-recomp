@@ -23,6 +23,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <map>
 #include <optional>
@@ -154,6 +155,7 @@ namespace ps2x::iop::detail
             nextModuleId = 1;
             moduleCursor = kModuleLoadBase;
             totalCycles = 0;
+            maskedThreadId = 0;
             soundCycles = 0;
             pendingSoundInterrupt = false;
             servicingSoundInterrupt = false;
@@ -318,7 +320,7 @@ namespace ps2x::iop::detail
             {
                 static unsigned traced = 0;
                 const uint32_t ord = call.ordinal;
-                if ((((ord >= 17u && ord <= 20u) && (a0 & 1u)) || ord == 21u || ord == 22u) && traced++ < 400)
+                if ((ord >= 4u && ord <= 30u) && traced++ < 500) // DBZIW-DEBUG (issue 020): every libsd call
                     std::fprintf(stderr, "[dw5xl:libsd] #%u a0=0x%x a1=0x%x a2=0x%x\n", ord, a0, cpu.gpr[5], cpu.gpr[6]);
                 if (ord == 15u || ord == 16u)
                     for (uint32_t k = 0x40u; k >= 4u; k -= 4u)
@@ -493,6 +495,35 @@ namespace ps2x::iop::detail
                 return !cpu.stopped;
             }
 
+            static const std::vector<uint32_t> pcTrace = [] { // DBZIW-DEBUG (issue 020): PS2X_IOP_PC_TRACE=0xaddr,...
+                std::vector<uint32_t> list;
+                for (const char *p = std::getenv("PS2X_IOP_PC_TRACE"); p && *p;)
+                {
+                    char *end = nullptr;
+                    list.push_back(static_cast<uint32_t>(std::strtoul(p, &end, 0)));
+                    if (end == p)
+                        break;
+                    p = (*end == ',') ? end + 1 : end;
+                }
+                return list;
+            }();
+            if (!pcTrace.empty() && std::find(pcTrace.begin(), pcTrace.end(), cpu.pc) != pcTrace.end())
+            {
+                static std::unordered_map<uint32_t, uint64_t> hits;
+                // PS2X_IOP_PC_TRACE_FROM=<cycle>: from that cycle on, print every hit (at most 20000 lines).
+                static const uint64_t everyFrom = [] {
+                    const char *value = std::getenv("PS2X_IOP_PC_TRACE_FROM");
+                    return value && *value ? std::strtoull(value, nullptr, 0) : ~uint64_t{0};
+                }();
+                static uint64_t everyPrinted = 0u;
+                const uint64_t hit = ++hits[cpu.pc];
+                const bool every = totalCycles >= everyFrom && everyPrinted < 20000u;
+                everyPrinted += every ? 1u : 0u;
+                if (every || hit <= 20u || (hit & (hit - 1u)) == 0u)
+                    std::fprintf(stderr, "[iop-pc] 0x%x hit=%llu cycle=%llu a0=0x%x a1=0x%x a2=0x%x a3=0x%x v0=0x%x ra=0x%x\n",
+                                 cpu.pc, static_cast<unsigned long long>(hit), static_cast<unsigned long long>(totalCycles),
+                                 cpu.gpr[4], cpu.gpr[5], cpu.gpr[6], cpu.gpr[7], cpu.gpr[2], cpu.gpr[31]);
+            }
             const bool running = cpuCore.executeInstruction(cpu);
             schedulePendingDma();
             ++totalInstructions;
@@ -594,6 +625,19 @@ namespace ps2x::iop::detail
         // Not that good to use exception handling for control flow but will do for now
         void servicePendingDmaInterrupts()
         {
+            static const bool overdueTrace = std::getenv("PS2X_LIBSD_TRACE") != nullptr; // DBZIW-DEBUG (issue 020)
+            static bool overdueReported = false;
+            if (overdueTrace && !overdueReported)
+                for (const auto &[irq, due] : pendingDmaInterrupts)
+                    if (totalCycles > due + 10000000u)
+                    {
+                        overdueReported = true;
+                        std::fprintf(stderr, "[iopdma-overdue] irq=0x%x due=%llu now=%llu intr=%u servicing=%d pending=%zu active=%d\n",
+                                     irq, static_cast<unsigned long long>(due), static_cast<unsigned long long>(totalCycles),
+                                     memory.interruptControl(), static_cast<int>(servicingDmaInterrupts),
+                                     pendingDmaInterrupts.size(), static_cast<int>(memory.soundDmaActive(irq)));
+                        dumpIntrHistory();
+                    }
             if (memory.interruptControl() == 0u || servicingDmaInterrupts || pendingDmaInterrupts.empty())
                 return;
 
@@ -689,18 +733,51 @@ namespace ps2x::iop::detail
                 const uint64_t target = totalCycles + cycles;
                 while (totalCycles < target)
                 {
+                    static const uint64_t threadTraceCycles = [] { // DBZIW-DEBUG (issue 020): IOP cycles between dumps
+                        const char *v = std::getenv("PS2X_IOP_THREAD_TRACE");
+                        return v && *v ? std::strtoull(v, nullptr, 0) : 0ull;
+                    }();
+                    static uint64_t nextThreadTrace = 0u;
+                    if (threadTraceCycles != 0u && totalCycles >= nextThreadTrace)
+                    {
+                        kernel.dumpThreads(totalCycles);
+                        nextThreadTrace = totalCycles + threadTraceCycles;
+                    }
+                    static const char *ramDump = std::getenv("PS2X_IOP_RAM_DUMP"); // DBZIW-DEBUG (issue 020): <cycle>:<file>
+                    static bool ramDumped = false;
+                    if (ramDump && !ramDumped && totalCycles >= std::strtoull(ramDump, nullptr, 0))
+                    {
+                        ramDumped = true;
+                        if (const char *path = std::strchr(ramDump, ':'))
+                            if (std::FILE *file = std::fopen(path + 1, "wb"))
+                            {
+                                std::fwrite(memory.ram().data(), 1, memory.ram().size(), file);
+                                std::fclose(file);
+                                std::fprintf(stderr, "[iop-ram] cycle=%llu written to %s\n",
+                                             static_cast<unsigned long long>(totalCycles), path + 1);
+                            }
+                    }
                     advanceSound();
                     serviceSoundInterrupt();
                     servicePendingDmaInterrupts();
                     servicePendingGuestCallbacks();
                     if (memory.interruptControl() != 0u)
                         timrman.serviceDue(totalCycles, *this);
-                    IopThread *next = kernel.beginNextReady(totalCycles);
+                    // A thread with interrupts disabled cannot be preempted: on the IOP a wake-up from a delay
+                    // or a higher-priority thread made ready needs an interrupt (issue 020: CRI_ADXI's lock).
+                    IopThread *next = maskedThreadId != 0 ? kernel.continueThread(maskedThreadId) : nullptr;
+                    if (!next)
+                        next = kernel.beginNextReady(totalCycles);
+                    maskedThreadId = 0;
                     if (!next)
                     {
+                        memory.setInterruptControl(1u); // the idle loop runs with interrupts enabled
                         uint64_t nextWake = kernel.nextWakeCycle(target);
-                        for (const auto &[irq, completionCycle] : pendingDmaInterrupts)
-                            nextWake = std::min(nextWake, completionCycle);
+                        if (memory.interruptControl() != 0u)
+                        {
+                            for (const auto &[irq, completionCycle] : pendingDmaInterrupts)
+                                nextWake = std::min(nextWake, completionCycle);
+                        }
                         if (!pendingGuestCallbacks.empty())
                             nextWake = std::min(nextWake, pendingGuestCallbacks.begin()->first);
                         if (memory.interruptControl() != 0u)
@@ -708,11 +785,15 @@ namespace ps2x::iop::detail
                         totalCycles = std::max(totalCycles + 1u, std::min(target, nextWake));
                         continue;
                     }
+                    memory.setInterruptControl(next->interruptControl);
                     const uint64_t before = totalCycles;
                     runCpu(next->cpu, static_cast<uint32_t>(std::min<uint64_t>(kDefaultSlice, target - totalCycles)));
+                    next->interruptControl = memory.interruptControl();
                     if (catchupTrace) // DW5XL-DEBUG
                         catchupThreadCycles[{next->id, next->entry}] += totalCycles - before;
                     kernel.endTimeslice(*next, kThreadReturnSentinel);
+                    if (next->state == IopThreadState::Ready && next->interruptControl == 0u)
+                        maskedThreadId = next->id;
                     if (totalCycles == before)
                         ++totalCycles;
                 }
@@ -912,6 +993,7 @@ namespace ps2x::iop::detail
         CpuState *activeCpu = nullptr;
         std::string lastError;
         bool servicingDmaInterrupts = false;
+        int maskedThreadId = 0; // thread still running with interrupts disabled (issue 020)
         bool servicingGuestCallbacks = false;
         uint32_t callDepth = 0u;
         bool inRunCycles = false;

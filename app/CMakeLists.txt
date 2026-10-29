@@ -64,6 +64,15 @@ target_link_libraries(dbziw_setup_disc_test PRIVATE dbziw_setup_core)
 set_target_properties(dbziw_setup_disc_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
 add_test(NAME setup_disc COMMAND dbziw_setup_disc_test)
 
+# Sofdec movie video input without the IPU (issue 020), shared by the game and its test
+add_library(dbziw_movie_input STATIC src/dbziw_movie_input.cpp)
+target_include_directories(dbziw_movie_input PUBLIC src)
+target_link_libraries(dbziw_movie_input PUBLIC ps2_runtime)
+add_executable(dbziw_movie_input_test tests/movie_input_test.cpp)
+target_link_libraries(dbziw_movie_input_test PRIVATE dbziw_movie_input)
+set_target_properties(dbziw_movie_input_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
+add_test(NAME movie_input COMMAND dbziw_movie_input_test)
+
 # Game executable (when generated sources exist)
 option(DBZIW_BUILD_GAME "Build the game (needs locally generated code)" OFF)
 if(DBZIW_BUILD_GAME)
@@ -74,13 +83,14 @@ if(DBZIW_BUILD_GAME)
             "${PS2RECOMP_DIR}/ps2xRuntime/src/main.cpp"
             "${PS2RECOMP_DIR}/ps2xRuntime/src/lib/ps2_debug_panel.cpp"
             setup/wizard_console.cpp
+            src/dbziw_movies.cpp
         )
         target_include_directories(dbziw PRIVATE "${DBZIW_GENERATED_DIR}" "${PS2RECOMP_DIR}/ps2xRuntime/src/lib")
-        target_link_libraries(dbziw PRIVATE ps2_runtime rlImGui imgui dbziw_setup_ui)
+        target_link_libraries(dbziw PRIVATE ps2_runtime rlImGui imgui dbziw_setup_ui dbziw_movie_input)
         target_compile_definitions(dbziw PRIVATE PS2X_ENABLE_DEBUG_UI=1 DBZIW_INSTALLED_MODE=1)
         target_compile_options(dbziw PRIVATE ${DBZIW_ARCH_FLAGS} ${DBZIW_STRICT_FP_FLAGS})
         set_target_properties(dbziw PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 64)
-        set_source_files_properties(setup/wizard_console.cpp PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+        set_source_files_properties(setup/wizard_console.cpp src/dbziw_movies.cpp PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
     endif()
 endif()
 

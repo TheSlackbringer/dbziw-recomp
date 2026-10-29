@@ -299,6 +299,12 @@ namespace ps2x::iop::detail
         // than reading past RAM into host memory; legal transfers wrap SPU RAM.
         const uint32_t availableWords = (RamSize - ramAddress) / 4u;
         const uint32_t copiedWords = static_cast<uint32_t>(std::min<uint64_t>(transferWords, availableWords));
+        static const bool spuDmaTrace = std::getenv("PS2X_SPU2_TRACE") != nullptr; // DBZIW-DEBUG (issue 020)
+        if (spuDmaTrace)
+        {
+            std::fprintf(stderr, "[iopmem:spudma] core=%u toSpu=%u ramAddress=0x%08x words=%u chcr=0x%08x bcr=0x%08x\n",
+                         secondCore ? 1u : 0u, (value & 1u) != 0u, ramAddress, copiedWords, value, blockControl);
+        }
         m_spu2.dmaTransfer(secondCore ? 1u : 0u, (value & 1u) != 0u,
                            m_ram.data() + ramAddress, copiedWords);
         if ((value & 1u) == 0u)

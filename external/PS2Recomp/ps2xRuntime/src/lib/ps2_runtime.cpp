@@ -429,6 +429,30 @@ namespace ps2x_dev
         uint32_t mask;
     };
 
+    static std::vector<PressEvent> s_pressEvents;
+
+    void stepInput(uint64_t tick)
+    {
+        uint32_t mask = 0u;
+        for (const PressEvent &ev : s_pressEvents)
+        {
+            if (tick >= ev.start && tick < ev.start + ev.duration)
+            {
+                mask |= ev.mask;
+            }
+        }
+        if (mask != 0u) // DBZIW-DEBUG (issue 020): scripted presses, only with PS2X_HOST_INPUT/PS2X_INPUT
+        {
+            static uint64_t lastLoggedTick = 0;
+            if (tick != lastLoggedTick)
+            {
+                lastLoggedTick = tick;
+                std::fprintf(stderr, "[stepInput] tick=%llu mask=0x%04x\n", (unsigned long long)tick, mask);
+            }
+        }
+        g_padPressedMask.store(mask, std::memory_order_relaxed);
+    }
+
     static std::vector<uint8_t> s_lastFrame;
     static uint32_t s_lastFrameW = 0u;
     static uint32_t s_lastFrameH = 0u;
@@ -441,7 +465,7 @@ namespace ps2x_dev
             n.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
         static const std::unordered_map<std::string, uint32_t> k{
             {"LEFT", 0x0080u}, {"DOWN", 0x0040u}, {"RIGHT", 0x0020u}, {"UP", 0x0010u},
-            {"START", 0x0008u}, {"R3", 0x0004u}, {"L3", 0x0002u}, {"SELECT", 0x0001u},
+            {"START", 0x0008u}, {"ENTER", 0x0008u}, {"R3", 0x0004u}, {"L3", 0x0002u}, {"SELECT", 0x0001u},
             {"SQUARE", 0x8000u}, {"CROSS", 0x4000u}, {"X", 0x4000u}, {"CIRCLE", 0x2000u},
             {"O", 0x2000u}, {"TRIANGLE", 0x1000u}, {"R1", 0x0800u}, {"L1", 0x0400u},
             {"R2", 0x0200u}, {"L2", 0x0100u}};
@@ -548,8 +572,13 @@ namespace ps2x_dev
                 ctrlPath = c;
             if (const char *st = std::getenv("PS2X_STATS"))
                 stats = *st && *st != '0';
-            if (const char *in = std::getenv("PS2X_INPUT"))
+            const char *in = std::getenv("PS2X_INPUT");
+            if (!in || !*in)
+                in = std::getenv("PS2X_HOST_INPUT");
+            if (in && *in)
             {
+                events.clear();
+                s_pressEvents.clear();
                 std::stringstream ss(in);
                 std::string item;
                 while (std::getline(ss, item, ','))
@@ -563,6 +592,7 @@ namespace ps2x_dev
                     ev.mask = parseButtons(item.substr(a + 1, b == std::string::npos ? std::string::npos : b - a - 1));
                     ev.duration = (b == std::string::npos) ? 6u : std::strtoull(item.substr(b + 1).c_str(), nullptr, 0);
                     events.push_back(ev);
+                    s_pressEvents.push_back(ev);
                 }
             }
             std::cerr << "[dev] harness: dumpEvery=" << dumpEvery << " exitTick=" << exitTick
@@ -764,12 +794,7 @@ namespace ps2x_dev
             GSTrace::onTick(tick);
             stepRamDebug(tick);
             pollCtrl(tick);
-            stepStats(tick);
-            uint32_t mask = 0u;
-            for (const PressEvent &ev : events)
-                if (tick >= ev.start && tick < ev.start + ev.duration)
-                    mask |= ev.mask;
-            g_padPressedMask.store(mask, std::memory_order_relaxed);
+            stepInput(tick);
 
             if (dumpEvery != 0u)
             {
@@ -2255,6 +2280,7 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
     RecompiledFunction targetFn = lookupFunction(targetPc);
     const uint32_t entryPc = ctx->pc;
     const uint64_t unwindEpoch = g_unwindEpoch;
+
     targetFn(rdram, ctx, this);
 
     if (isStopRequested() || ctx->pc == 0u || g_unwindEpoch != unwindEpoch)
@@ -3265,6 +3291,10 @@ void PS2Runtime::run()
 
     applySavedOutputSettings(m_gs);
 
+    ps2x_dev::Harness devHarness;
+    devHarness.runtime = this;
+    devHarness.init();
+
     std::thread gameThread([&]()
                            {
         ThreadNaming::SetCurrentThreadName("GameThread");
@@ -3311,9 +3341,6 @@ void PS2Runtime::run()
     uint64_t tick = 0;
     const int hostFpsOverride = configuredHostTargetFps();
     uint64_t lastPresentationField = 0;
-    ps2x_dev::Harness devHarness;
-    devHarness.runtime = this;
-    devHarness.init();
     while (!isStopRequested() && !gameThreadFinished.load(std::memory_order_acquire))
     {
         if (hostFpsOverride == 0 && m_eeScheduler)

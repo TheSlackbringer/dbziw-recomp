@@ -727,6 +727,41 @@ void register_ps2_runtime_kernel_tests()
                      "the resumed waiter should re-enter its priority queue once");
         });
 
+        tc.Run("thread syscalls return the EE kernel's success values (issue 020)", [](TestCase &t)
+        {
+            TestEnv env;
+            EeScheduler &ee = env.runtime.eeScheduler();
+            ee.reset(env.rdram.data(), env.ctx);
+            ee.bindMainContextForSyscall(env.ctx, env.rdram.data());
+
+            const int id = ee.createThread(EeThreadCreateParams{0u, K_SCHED_HIGH, 0x24000u, 0x800u,
+                                                                 0u, 20, 0u});
+            t.Equals(ee.startThread(id, 0u, env.ctx, false), KE_OK, "StartThread should make the test thread ready");
+
+            setRegU32(env.ctx, 4, static_cast<uint32_t>(id));
+            SuspendThread(env.rdram.data(), &env.ctx, &env.runtime);
+            t.Equals(getRegS32(env.ctx, 2), id, "SuspendThread returns the thread id on success");
+
+            setRegU32(env.ctx, 4, static_cast<uint32_t>(id));
+            setRegU32(env.ctx, 5, 30u);
+            ChangeThreadPriority(env.rdram.data(), &env.ctx, &env.runtime);
+            t.Equals(getRegS32(env.ctx, 2), 20, "ChangeThreadPriority returns the previous priority");
+
+            setRegU32(env.ctx, 4, static_cast<uint32_t>(id));
+            setRegU32(env.ctx, 5, 0u);
+            ChangeThreadPriority(env.rdram.data(), &env.ctx, &env.runtime);
+            t.Equals(getRegS32(env.ctx, 2), 30, "priority 0 is a legal EE priority");
+            t.Equals(ee.thread(id)->currentPriority, 0, "the thread should now run at priority 0");
+
+            setRegU32(env.ctx, 4, static_cast<uint32_t>(id));
+            ResumeThread(env.rdram.data(), &env.ctx, &env.runtime);
+            t.Equals(getRegS32(env.ctx, 2), id, "ResumeThread returns the thread id on success");
+
+            setRegU32(env.ctx, 4, static_cast<uint32_t>(id));
+            ResumeThread(env.rdram.data(), &env.ctx, &env.runtime);
+            t.IsTrue(getRegS32(env.ctx, 2) < 0, "resuming a thread that is not suspended still returns the kernel error");
+        });
+
         tc.Run("semaphore signal, delete, and release complete blocked contexts with exact results", [](TestCase &t)
         {
             const auto blockMain = [](TestEnv &env, int &semaId)

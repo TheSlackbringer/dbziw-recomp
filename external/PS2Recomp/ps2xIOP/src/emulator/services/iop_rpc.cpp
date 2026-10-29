@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <vector>
@@ -79,6 +81,20 @@ namespace ps2x::iop::detail
                     continue;
 
                 const uint32_t size = static_cast<uint32_t>(signedSize);
+                static const bool sifTrace = std::getenv("PS2X_SIF_TRACE") != nullptr; // DBZIW-DEBUG: IOP -> EE SIF DMA
+                if (sifTrace)
+                {
+                    std::fprintf(stderr, "[iop:setdma] i=%u/%u src=0x%08x dst=0x%08x size=0x%x ra=0x%08x w0=0x%08x w1=0x%08x\n",
+                                 i, descriptorCount, source, destination, size, cpu.gpr[31],
+                                 m_memory.read32(source), m_memory.read32(source + 4u));
+                    const uint32_t messages = m_memory.read32(source);
+                    for (uint32_t m = 0; size == 0x880u && m < messages && m < 8u; ++m)
+                    {
+                        const uint32_t msg = source + 0x10u + m * 16u;
+                        std::fprintf(stderr, "[iop:dtx] dst=0x%08x n=%u #%u %08x %08x %08x %08x\n", destination, messages, m,
+                                     m_memory.read32(msg), m_memory.read32(msg + 4u), m_memory.read32(msg + 8u), m_memory.read32(msg + 12u));
+                    }
+                }
                 if (!m_memory.ownsRamRange(source, size))
                 {
                     setV0(0u);
