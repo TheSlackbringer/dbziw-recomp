@@ -5,14 +5,14 @@ Static recompilation of **Dragon Ball Z: Infinite World** (PAL SLES_553.47) to a
 first-launch setup pipeline (`app/setup/`) that verifies the player's retail disc and extracts required assets to local
 appdata. Goal: full game playable natively at 60 FPS (PAL60) and 50 FPS (PAL50), 4K rendering, widescreen support,
 instant loading, sub-frame input response (gamepad/fightstick), CRI ADX audio and Sofdec SFD cutscene playback, and zero
-emulation overhead. GitHub: TheSlackbringer/dbziw-port.
+emulation overhead. GitHub: TheSlackbringer/dbziw-recomp.
 
-Read first: this file → `notes/issues/README.md` (local: index, "Waiting for you", working agreement; its first line
-points to the private `notes/AGENTS.md`) → `notes/issues/ORDER.md` (the agreed order and the DBZIW ↔ DW5 number key) →
-the current issue's `spec.md` and `work.md`. Setup/build commands: "Essentials" in this file. Look-ups (repo map,
-debug switches, Ghidra, PCSX2, record/replay, pitfalls): "Reference" at the end of this file. Lineage: the runtime and
-way of working come from `../dw5-ps2` (forked at about DW5 `438a3de`, 2026-10-20); later DW5 work arrives through the
-issues in `ORDER.md`'s number key (DW5 issues are always written "DW5 NNN"; the two series overlap).
+Read first: this file → `notes/issues/README.md` (local: index, "Waiting for you", working agreement; the line under
+its title points to the private `notes/AGENTS.md`) → `notes/issues/ORDER.md` (the agreed order and the DBZIW ↔ DW5
+number key) → the current issue's `spec.md` and `work.md`. Setup/build commands: "Essentials" in this file. Look-ups
+(repo map, debug switches, Ghidra, PCSX2, record/replay, pitfalls): "Reference" at the end of this file. Lineage: the
+runtime and way of working come from `../dw5-ps2` (forked at about DW5 `438a3de`, 2026-10-20); later DW5 work arrives
+through the issues in `ORDER.md`'s number key (DW5 issues are always written "DW5 NNN"; the two series overlap).
 
 Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
 
@@ -98,7 +98,8 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
 - **Performance changes must give identical output** (same frames, same sound, exact frame advantage & cancel timing in combat).
   Test at **1x**: every run passes `PS2X_GS_SCALE=1 PS2X_GS_SSAA=1` and you check the `[output] scale=1x` log line.
   Two runs of the same build may not match in battle today (host-time dependence, issue 022): then record the
-  comparison as pending, never as passed.
+  comparison as pending, never as passed. A speed spec may still close with that comparison pending when byte-level
+  evidence exists (CTests, 0 verifier mismatches, IDENTICAL boot frames), as DW5 did (user, 2026-10-29).
 - **Exact saved-frame comparison (DW5 2026-10-22; tool planned: 014):** Use `tools/debug/compare_frames.py` for renderer/shader,
   VU graphics math, framebuffer/presentation changes, optimizations/refactors in those paths, and visual-regression
   investigations. This is a targeted visual debugging/correctness check, not a requirement after every change.
@@ -232,9 +233,11 @@ A host-input script disables real keyboard polling for the whole run: never set 
 manual play. Silent sink missing after a reboot: `pactl load-module module-null-sink sink_name=dbziw_codex_tests`.
 Stop a game with `kill <pid>` (never `pkill -f dbziw` from a shell whose own command line contains that string).
 Known route until `dbztest.py` exists (017): `120:CROSS:5,400:CROSS:5,800:LEFT:5,850:CROSS:5,950:CROSS:5,1100:CROSS:5,
-1250:CROSS:5,1400:CROSS:5` passes language select, memory card check, the 50/60 Hz selector (PAL50 chosen) and
-the autosave warning; the opening movie starts at ~1790 (020 M1; checkpoint `notes/issues/tests/out/020-m1-probe/
-state_1780.bin`). Timeline (PAL50, 009): language select ~100, Bandai Namco 500–600, Dimps ~800, CRIWARE 1000–1200.
+1250:CROSS:5,1400:CROSS:5` passes language select, memory card check, the 50/60 Hz selector (the run stays in PAL50;
+which option LEFT picks is not checked, 019) and the autosave warning; the opening movie starts at ~1790 (020 M1;
+checkpoint `notes/issues/tests/out/020-m1-probe/state_1780.bin`). Timeline with 009's presses
+(`320:X:10,800:ENTER:10,950:ENTER:10,...`, PAL50): language select ~100, Bandai Namco 500–600, Dimps ~800, CRIWARE
+1000–1200; other presses move the screens to other ticks.
 Presented-window timing without touching the desktop: instead of `PS2X_HIDDEN=1`, prefix the game with
 `gamescope --backend headless -W 2560 -H 1440 -w 2560 -h 1440 -r 240 --` (example test display). Frame dumps are the
 presented frames (`frame_<tick>.png`); contact sheet:
@@ -316,8 +319,9 @@ renderer fixes are runtime patches in `vendor/parallel-gs-patches/`.
 - **CRI ADX audio & Sofdec SFD video:** Infinite World relies heavily on CRI middleware (`CRI_ADXI.IRX`, AFS archives,
   and SFD video streams). Data transfer from IOP to EE streaming buffers must not starve or hitch. Sofdec runs on top
   of Sony's libmpeg and libipu (native game code, unbound), which drive the IPU hardware; the runtime's IPU is
-  register-level only (issue 020, corrected by 020 M1). `Stubs/IPU.cpp` and `Stubs/MPEG.cpp` contain other games'
-  fixed addresses (`MPEG.cpp` writes DW5's): never bind them for DBZIW.
+  register-level only until 020's IPU model (option A, approved 2026-10-27) lands; update this line then.
+  `Stubs/IPU.cpp` and `Stubs/MPEG.cpp` contain other games' fixed addresses (`MPEG.cpp` writes DW5's): never bind them
+  for DBZIW.
 - **Combat frame cancellation and juggle physics:** Dimps fighter mechanics (cancels, Aura Bursts, fatigue meters) rely on
   exact frame windows. Timing hacks or sleeps will desync combat physics and break combos.
 - **Keep `[patches]` in `dbz_iw.toml` empty:** `ps2_analyzer` falsely flags ordinary stores as self-modifying code.
