@@ -5,6 +5,11 @@ This directory is a modified copy of [PS2Recomp](https://github.com/ran-j/PS2Rec
 - Upstream base: `ran-j/PS2Recomp` commit `c5a9d02573410a2085a4b4b831b0b68ba3515440` (2026-09-30).
 - Applied on top: the PS2Recomp patch series kept in `../../vendor/runtime-patches/` (provenance in `../../THIRD_PARTY.md`), upstream pull requests #271 and #274, and the DW5XL runtime changes (VIF1 DIRECT/GIF PATH2 handling, libmpeg end-of-stream, PSS audio sub-stream filtering, memory card directory count, IOP SET_SREG forwarding, `sceCdBreak`, `GetSystemTimeLow`, PAL/NTSC cadence selection, paraLLEl-GS Vulkan compute renderer with 3-slot asynchronous readback ring buffer, and others).
 - Changes after vendoring are recorded in this repository's Git history.
+- Upstream sync for DBZIW, 2026-10-29: level with `ran-j/PS2Recomp` main at `e5636981a1c9de368f6b71e819c3dc188dfedbf4`
+  (2026-10-23). Of the four upstream commits after the base, #271 and #274 were already applied (above) and #272
+  (PS2 float semantics for EE FPU results and DIV.S/RSQRT.S, `eb8688b`) was already present in full (its translator,
+  macros and tests, identical tests). #384 (GIF FLG=3 treated like IMAGE wherever a GIFtag is parsed, `e563698`) was
+  applied, except its `gs_frontend.cpp` hunk: `processGIFPacket` here already maps FLG=3 to IMAGE when it reads the tag.
 
 Build directories (`build/`) are local and ignored.
 

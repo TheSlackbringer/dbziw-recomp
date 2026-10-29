@@ -21,11 +21,21 @@
 #include "runtime/ps2_symbols.h"
 #include <csignal>
 
+static const char *ps2CrashSignalName(int sig)
+{
+    if (sig == SIGSEGV)
+        return "SIGSEGV";
+#ifdef SIGBUS // not on Windows (registered below under the same guard)
+    if (sig == SIGBUS)
+        return "SIGBUS";
+#endif
+    return "FATAL";
+}
+
 static void ps2CrashSignalHandler(int sig)
 {
     std::fprintf(stderr, "\n================================================================================\n");
-    std::fprintf(stderr, "[GUEST CRASH] Fatal signal %d (%s) caught during execution!\n",
-                 sig, sig == SIGSEGV ? "SIGSEGV" : (sig == SIGBUS ? "SIGBUS" : "FATAL"));
+    std::fprintf(stderr, "[GUEST CRASH] Fatal signal %d (%s) caught during execution!\n", sig, ps2CrashSignalName(sig));
     std::fprintf(stderr, "================================================================================\n");
     std::fflush(stderr);
     std::_Exit(139);

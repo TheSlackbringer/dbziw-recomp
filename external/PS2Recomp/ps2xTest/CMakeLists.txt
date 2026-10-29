@@ -20,7 +20,21 @@ target_include_directories(ps2_test_function_table PRIVATE
     ${CMAKE_SOURCE_DIR}/ps2xIOP/include
 )
 
+# Execute synthetic CodeGenerator output instead of matching its formatting.
+add_executable(ps2x_vu0_fixture_generator EXCLUDE_FROM_ALL src/vu0_fixture_generator.cpp)
+target_link_libraries(ps2x_vu0_fixture_generator PRIVATE ps2_recomp_lib)
+set(vu0_fixtures "${CMAKE_CURRENT_BINARY_DIR}/vu0_test_fixtures.cpp")
+add_custom_command(OUTPUT "${vu0_fixtures}"
+    COMMAND $<TARGET_FILE:ps2x_vu0_fixture_generator> "${vu0_fixtures}"
+    DEPENDS ps2x_vu0_fixture_generator
+    VERBATIM)
+
+if(NOT MSVC)
+    set_source_files_properties("${vu0_fixtures}" PROPERTIES COMPILE_OPTIONS "-msse4.1")
+endif()
+
 add_library(ps2_test_lib STATIC
+    "${vu0_fixtures}"
     src/code_generator_tests.cpp
     src/r5900_decoder_tests.cpp
     src/elf_analyzer_tests.cpp
@@ -134,6 +148,15 @@ if(UNIX AND NOT APPLE)
     target_link_libraries(ps2x_checkpoint_test PRIVATE ${CMAKE_DL_LIBS})
 endif()
 
+# Same stack as ps2x_tests: both construct a full PS2Runtime on the main thread, which overflows Windows' 1 MiB default.
+foreach(dbziw_test ps2x_watchdog_test ps2x_checkpoint_test)
+    if(MSVC)
+        target_link_options(${dbziw_test} PRIVATE "/STACK:8388608")
+    elseif(MINGW)
+        target_link_options(${dbziw_test} PRIVATE "-Wl,--stack,8388608")
+    endif()
+endforeach()
+
 include("${CMAKE_SOURCE_DIR}/ps2xRuntime/cmake/ReleaseMode.cmake")
 
 if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
@@ -141,5 +164,24 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebI
     EnableFastReleaseMode(ps2x_tests)
     EnableFastReleaseMode(ps2x_watchdog_test)
     EnableFastReleaseMode(ps2x_checkpoint_test)
+endif()
+
+# Focused callback-fed MPEG regressions; same production runtime and synthetic function table.
+add_executable(ps2x_mpeg_input_tests src/mpeg_input_tests.cpp $<TARGET_OBJECTS:ps2_test_function_table>)
+target_include_directories(ps2x_mpeg_input_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/ps2xRuntime/include
+    ${CMAKE_SOURCE_DIR}/ps2xRuntime/src/lib/Kernel)
+target_link_libraries(ps2x_mpeg_input_tests PRIVATE ps2_runtime ps2_iop)
+if(COMMAND ps2x_stage_ffmpeg_runtime_dlls)
+    ps2x_stage_ffmpeg_runtime_dlls(ps2x_mpeg_input_tests)
+endif()
+if(MSVC)
+    target_link_options(ps2x_mpeg_input_tests PRIVATE "/STACK:8388608")
+elseif(MINGW)
+    target_link_options(ps2x_mpeg_input_tests PRIVATE "-Wl,--stack,8388608")
+endif()
+if(BUILD_TESTING)
+    add_test(NAME mpeg_input_service COMMAND ps2x_mpeg_input_tests)
 endif()
 
