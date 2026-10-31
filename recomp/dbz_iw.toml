@@ -1246,3 +1246,37 @@ instructions = [] # Analyzer SMC guesses are ordinary stores; never NOP them.
 critical = [
   "_start",
 ]
+
+# Sony's kernel patches (issue 014 M3c): the start-up installers (TLB FUN_0010b8b8, Exec FUN_0010c3c0, InitAlarm
+# FUN_0010c778) copy these images into kernel memory and install services and the Timer 3 vector pointing into them.
+# Compiled natively so those services run Sony's code instead of returning an error. Byte-identical to DW5's images
+# (DW5 source + 0xfc560); destinations, sizes and function ranges are DW5's (dw5xl.toml, DW5 038).
+[[code_copies]]
+name = "sdk_tlb"
+source = 0x40bda8
+destination = 0x80075000
+size = 0x330
+functions = [[0x0, 0x38], [0x38, 0x90], [0xc8, 0x3c], [0x108, 0x4c], [0x158, 0x4c], [0x1a8, 0x130]]
+
+[[code_copies]]
+name = "sdk_exec"
+source = 0x40c418
+destination = 0x80074000
+size = 0x7a8
+functions = [[0x0, 0x84], [0x88, 0xac], [0x138, 0xac], [0x1e8, 0xc0], [0x2a8, 0xa4], [0x350, 0x74], [0x3c8, 0xd0], [0x498, 0x1e4]]
+
+[[code_copies]]
+name = "sdk_alarm"
+source = 0x40cbe0
+destination = 0x80076000
+size = 0x740
+functions = [[0x0, 0x38], [0x38, 0x1c], [0x58, 0x104], [0x160, 0x13c], [0x2a0, 0x1a0], [0x440, 0x20], [0x460, 0x24], [0x488, 0x1e0], [0x680, 0x3c], [0x6c0, 0x28]]
+
+# Alarm's ERET callback bridge is copied separately from its kernel helpers.
+# Only the five instructions through its terminal syscall are executable.
+[[code_copies]]
+name = "sdk_alarm_callback"
+source = 0x40d320
+destination = 0x82000
+size = 0x28
+functions = [[0x0, 0x14]]
