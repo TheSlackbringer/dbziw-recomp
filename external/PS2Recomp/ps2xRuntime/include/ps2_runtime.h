@@ -289,6 +289,20 @@ struct RecompiledModule
     size_t entryCount;
 };
 
+struct RecompiledCodeWord { uint32_t address, word; };
+struct RecompiledCodeImage
+{
+    RecompiledModule module;
+    const RecompiledCodeWord *words;
+    size_t wordCount;
+};
+// Generated metadata has static lifetime; each runtime validates and owns its registration state.
+class RecompiledCodeImageRegistration
+{
+public:
+    explicit RecompiledCodeImageRegistration(const RecompiledCodeImage &image);
+};
+
 class PS2Runtime
 {
 public:
@@ -356,6 +370,7 @@ public:
     // Mutations execute on the EE executor (or before it starts). Descriptors
     // and their entry arrays must remain immutable for the runtime's lifetime.
     bool registerCompiledModule(const RecompiledModule &module);
+    bool registerCompiledCodeImage(const RecompiledCodeImage &image);
     bool activateCompiledModule(std::string_view identity);
     void deactivateCompiledModule();
     const RecompiledModule *activeCompiledModule() const { return m_activeCompiledModule; }
@@ -498,6 +513,7 @@ private:
     std::string m_buildId;
     RecompiledFunction resolveFunctionExact(uint32_t address) const;
     std::vector<const RecompiledModule *> m_compiledModules;
+    std::vector<const RecompiledCodeImage *> m_compiledCodeImages;
     const RecompiledModule *m_activeCompiledModule = nullptr;
     uint64_t m_compiledModuleGeneration = 0;
 
