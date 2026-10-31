@@ -157,6 +157,8 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
 - **Never delete build dirs containing `_deps`;** no `rm` with bare shell variables (use `"${VAR:?}"`).
 - **Test runs never change your settings or saves:** scratch copies of the settings file (`PS2X_SETTINGS_FILE`,
   *planned: 028*) and of the memory cards; check afterwards that yours are unchanged (DW5, 2026-10-22 and 2026-10-27).
+  Memory cards: `PS2X_MC_ROOT=<scratch>/mc0`; since `21fe999` the runtime honours it from start-up and a hidden run
+  does not write `imgui.ini`, so a test run leaves `game/` untouched (014's route check verifies it).
 - **Runnable test scripts live in `notes/issues/tests/`,** never only in the session scratchpad, which gets wiped
   (DW5, 2026-10-27).
 - Keep `AGENTS.md` current when rules or the way of working change: propose the change, and edit only with the
@@ -237,7 +239,12 @@ Stop a game with `kill <pid>` (never `pkill -f dbziw` from a shell whose own com
 Known route until `dbztest.py` exists (017): `120:CROSS:5,400:CROSS:5,800:LEFT:5,850:CROSS:5,950:CROSS:5,1100:CROSS:5,
 1250:CROSS:5,1400:CROSS:5` passes language select, memory card check, the 50/60 Hz selector (the run stays in PAL50;
 which option LEFT picks is not checked, 019) and the autosave warning; the opening movie starts at ~1790 (020 M1;
-checkpoint `notes/issues/tests/out/020-m1-probe/state_1780.bin`). Timeline with 009's presses
+checkpoint `notes/issues/tests/out/020-m1-probe/state_1780.bin`). The same route reaches the title screen ("Press
+START button") at ~6750 after the movie (014 M3d). Further, PAL50: `6800:START:5,7100:CROSS:5` (New Game),
+`7300:UP:5,7400:CROSS:5` (create the save file: Yes; use a scratch card folder, `PS2X_MC_ROOT`), main menu at ~7700,
+`7900:DOWN:5,8000:CROSS:5` (Dragon Duel), `8400/8500/8600:DOWN:5,8700:CROSS:5` (CPU vs CPU), then CROSS every 150
+ticks to ~9950 (default characters and stage); the battle intro starts at ~10,000. Runner with the run-time code
+checks: `notes/issues/tests/route_014_m3d.py [--extra ...]`. Timeline with 009's presses
 (`320:X:10,800:ENTER:10,950:ENTER:10,...`, PAL50): language select ~100, Bandai Namco 500–600, Dimps ~800, CRIWARE
 1000–1200; other presses move the screens to other ticks.
 Presented-window timing without touching the desktop: instead of `PS2X_HIDDEN=1`, prefix the game with
@@ -261,7 +268,10 @@ Diagnostics/pacing: `PS2X_STALL_WATCHDOG=3` · `PS2X_CRASH_HANDLER=1` · `PS2X_S
 `PS2X_VU1_LIFT_VERIFY=1` (every native VU1 run repeated by the interpreter; slow) · `PS2X_VU1_RUN_CAPTURE=<prefix>` ·
 `PS2X_VU1_ASYNC=0` (synchronous device) · `PS2X_GS_ASYNC=0` (GS inline, no worker thread) · `PS2X_HOST_FPS` ·
 `PS2X_LOAD_STATE=<file>` / `PS2X_DUMP_STATE=<file>` / `PS2X_DUMP_STATE_TICK=<n>` (checkpoints; full fidelity: 016) ·
-`PS2X_CTRL=<file>` (dev command file).
+`PS2X_CTRL=<file>` (dev command file) · `PS2X_THREADS_AT_EXIT=1` (EE threads, semaphores and event flags at the exit
+tick) · `PS2X_MC_ROOT=<dir>` (memory card slot 1 folder, slot 2 beside it; tests) · `PS2X_KERNEL_TRACE=1` (FlushCache
+and sceSifLoadElf with their caller, installed kernel services that cannot run) · `PS2X_IRQ_TRACE=1` (EE interrupts
+by cause).
 Graphics: `PS2X_GS_SCALE` / `PS2X_GS_SSAA` · `PS2X_NO_WEAVE` · `PS2X_GS_SYNCREADBACK` · `PS2X_GS_TRACE=<file>` +
 `_FROM/_TO` · `PS2X_GS_RECORD=<file>` + `_FROM/_TO` · `PS2X_VRAM_DUMP=<file>` · `PS2X_XGKICK_CAPTURE=<prefix>` + `_FROM/_TO`.
 Sound/IOP: `PS2X_SPU2_TRACE` · `PS2X_LIBSD_TRACE` · `PS2X_AUDIO_DUMP=<wav>` (s16 stereo 48 kHz) · `PS2X_AUDIO_TRACE` ·
@@ -324,7 +334,9 @@ renderer fixes are runtime patches in `vendor/parallel-gs-patches/`.
 - ONE source project `ghidra/dbziw.gpr` (renames/comments go here, via GUI/MCP). Headless never runs on it: copy
   `ghidra/dbziw.gpr` + `ghidra/dbziw.rep` to your scratch dir, run
   `analyzeHeadless <dir> dbziw -process SLES_553.47 -noanalysis -readOnly -scriptPath tools/ghidra_scripts
-  -postScript DecompileAt.java 0xADDR ...` (also `CallersOf.java`, `DecompileAll.java <out>`), then delete the copy.
+  -postScript DecompileAt.java 0xADDR ...` (also `CallersOf.java`, `DecompileAll.java <out>`, `ExportCodeRefs.java
+  <out.tsv>`: every function and every reference into the code range, for
+  `notes/issues/tests/crosscheck_ghidra_refs_014.py`), then delete the copy.
   Output lines are prefixed `INFO  <Script>.java>`; batch addresses (30–60 s JVM start per run).
 - Quick look at one function: the generated `recomp/output/*_0x<addr>.cpp` comments every instruction.
 - IOP module bases at run time (Ghidra addresses are module-relative), known so far: `CRI_ADXI.IRX` 0x16a00 (020 M1),
@@ -338,7 +350,16 @@ renderer fixes are runtime patches in `vendor/parallel-gs-patches/`.
   get a fabricated `NOP` delay slot (DW5 038). A row can also run past its own end into the next function, which
   then has no row: a tail jump `j` into it falls off the row end (DBZIW `0x1a1648`, 014). Validate maps before
   regenerating (issue 014: `tools/find_missing_entries.py`, `tools/debug/validate_function_map.py` with the
-  generated-code audit; the map passes alone do not see that case).
+  generated-code audit; the map passes alone do not see that case). A function the map misses gets a named profile
+  `entry_points` line (DW5 026's way, not a CSV edit): inside a row it becomes a registered resume entry, in a gap its
+  own function. 014 added 104 (pointer-only functions, switch cases, swallowed and unreferenced code). Its test checks
+  every entry is registered, no wrapper runs off its row into unregistered code, and code nobody references is scanned
+  for (`find_code_in_gaps_014.py`).
+- **Sony's kernel patches:** the game's own start-up installers (TLB `FUN_0010b8b8`, Exec `FUN_0010c3c0`, InitAlarm
+  `0x10c778`) copy four images into kernel memory and install services and the Timer 3 vector pointing there. The
+  profile's `[[code_copies]]` compile them (014, DW5's entries + `0xfc560`). Without them every installed service
+  returns `KE_ERROR`, and since the DW5 038 port a Timer 3 interrupt aborts ("Installed INTC kernel vector has no
+  native function").
 - **PAL50 vs PAL60 modes:** Infinite World boots into a 50Hz/60Hz selector screen. The runtime takes the field rate
   from the game's `SetGsCrt` (mode 3 = PAL; only modes 2/3 are recognised); the scanout guesses PAL from picture height.
   VSync cadence, CD stream rate, movies and IOP timing must all follow the selected mode (issue 019).
