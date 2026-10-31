@@ -1,6 +1,7 @@
 #include "Common.h"
 #include "GS.h"
 #include "ps2_log.h"
+#include "runtime/gs/ps2_gif_arbiter.h"
 #include "runtime/gs/ps2_gs_common.h"
 #include "runtime/gs/ps2_gs_psmct16.h"
 #include "runtime/ee_scheduler.h"
@@ -751,8 +752,11 @@ namespace ps2_stubs
         mem.writeIORegister(GIF_CHANNEL + 0x00u, CHCR_STR_MODE0);
         mem.processPendingTransfers();
 
-        // GS -> host readback: the BITBLT/TRXDIR packet above may still be queued.
+        // GS -> host readback: the BITBLT/TRXDIR packet above may still be queued, in the
+        // device queue or in the GIF arbiter's GS worker (the same waits as device::readLocalToHost).
         ps2x::device::drainAll(mem, ps2x::device::DrainReason::StoreImage);
+        if (mem.m_gifArbiter)
+            mem.m_gifArbiter->waitIdle();
         ps2TraceGuestRangeWrite(rdram, dstAddr, totalImageBytes, "sceGsExecStoreImage", ctx);
         runtime->gs().consumeLocalToHostBytes(dst, totalImageBytes);
         runtime->guestFree(pktAddr);
