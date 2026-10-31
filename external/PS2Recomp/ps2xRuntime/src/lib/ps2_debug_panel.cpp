@@ -20,6 +20,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -2182,6 +2183,9 @@ void PS2DebugPanel::initialize()
     if (!m_initialized)
     {
         rlImGuiSetup(true);
+        // A hidden run (tests) must not write the panel layout (imgui.ini) next to the game (014 M3d, 2026-10-31).
+        if (const char *hidden = std::getenv("PS2X_HIDDEN"); hidden && hidden[0] != '\0' && hidden[0] != '0')
+            ImGui::GetIO().IniFilename = nullptr;
         m_initialized = true;
     }
 #endif

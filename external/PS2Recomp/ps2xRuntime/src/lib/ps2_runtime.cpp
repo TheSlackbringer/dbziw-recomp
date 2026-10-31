@@ -399,6 +399,10 @@ namespace
             defaults.hostRoot = defaults.elfDirectory;
             defaults.cdRoot = defaults.elfDirectory;
             defaults.mcRoot = defaults.elfDirectory / "mc0";
+            // initialize() starts the IOP's memory card service before loadELF(); honour PS2X_MC_ROOT from the start
+            // so a test run never creates mc0/mc1 next to the game (014 M3d, 2026-10-31).
+            if (const char *mc = std::getenv("PS2X_MC_ROOT"); mc && *mc)
+                defaults.mcRoot = std::filesystem::path(mc);
             return defaults;
         }();
 
