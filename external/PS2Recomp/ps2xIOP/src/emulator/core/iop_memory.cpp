@@ -3,6 +3,7 @@
 #include "iop_memory.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 
 namespace ps2x::iop::detail
