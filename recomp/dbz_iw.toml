@@ -212,6 +212,83 @@ stubs = [
 ]
 
 untracked_stubs = []
+
+# Guest functions missing from the Ghidra function list that the game can still reach; PS2Recomp translates each
+# one natively and registers it (inside a row: a resume entry of that row; in a gap: its own function up to the next
+# known start). Issue 014 M3b (tools/find_missing_entries.py, validate_function_map.py, the row scan). Names say
+# where the reference is: codePtrXXXXXX = a code pointer stored in data at 0xXXXXXX; builtXXXXXX = an address built
+# by lui+addiu at 0xXXXXXX. Evidence per entry: notes/issues/014-function-map-and-frame-audit/dispositions.json.
+#  - Switch table at 0x489da0 in FUN_001243a0 (a formatted-input parser): Ghidra did not resolve it, so the case
+#    code after the row is undecoded and case 4 has no entry. Case 0 runs off the row's end into the case code.
+#  - Tables of code pointers in data (vtable-like): 0x4724d8-0x472570, 0x484810-0x484880, 0x493c20-0x493c28,
+#    0x447e54-0x447e58, and single pointers.
+#  - Handler routines that switch cases (rows caseD_7 to caseD_c) load into t0 for an indirect call; Ghidra merged
+#    them into the entry_ rows before them.
+#  - Functions a row swallows after the previous function's return, referenced by code pointers in data.
+#  - Likely functions without a confirmed use (pointer or address build only), added so they can never stop the game.
+#  - Small Ghidra-only functions with no reference found anywhere; the row before ends on their first instructions.
+#    Added so they can never stop the game, as DW5 026 did with an unreferenced handler (unrefThunkXXXXXX).
+entry_points = [
+  "fun1243a0CaseTail@0x00124790",
+  "fun1243a0Case0Branch@0x001247F8",
+  "fun1243a0Case1@0x00124838",
+  "fun1243a0Case2@0x00124950",
+  "fun1243a0Case4@0x00124CF0",
+  "codePtr4724D8@0x00275340",
+  "codePtr4724E8@0x002709A0",
+  "codePtr4724F0@0x00270990",
+  "codePtr4724F8@0x00270770",
+  "codePtr472500@0x0026FF50",
+  "codePtr472508@0x0026FB80",
+  "codePtr472564@0x00270350",
+  "codePtr472570@0x0026FB40",
+  "codePtr484810@0x00284D60",
+  "codePtr484820@0x002841E0",
+  "codePtr484824@0x002841A0",
+  "codePtr484828@0x002834C0",
+  "codePtr484830@0x00284910",
+  "codePtr48484C@0x00283610",
+  "codePtr48485C@0x002835D0",
+  "codePtr48486C@0x00282FD0",
+  "codePtr484880@0x00282F80",
+  "codePtr493C20@0x001D6470",
+  "codePtr493C24@0x001D6460",
+  "codePtr493C28@0x001D6440",
+  "codePtr447E54@0x001BB240",
+  "codePtr447E58@0x001BB190",
+  "codePtr42FFB8@0x00168DD0",
+  "codePtr430E48@0x0016AA48",
+  "codePtr435BDC@0x0016D4A8",
+  "built1B144C@0x001B0AC0",
+  "built1B1440@0x001B0B30",
+  "built1B1434@0x001B0BA0",
+  "built1B1374@0x001B0C30",
+  "built1B1368@0x001B0C50",
+  "codePtr49494C@0x00200090",
+  "codePtr494948@0x002000B0",
+  "codePtr496CCC@0x0028F120",
+  "codePtr496CDC@0x0028F328",
+  "codePtr498E80@0x00307D10",
+  "codePtr498F00@0x003090B0",
+  "codePtr499210@0x00310E10",
+  "codePtr49A154@0x003383A0",
+  "codePtr49A7E8@0x0034CA50",
+  "codePtr49A7E4@0x0034CB50",
+  "codePtr49A7E0@0x0034CD60",
+  "codePtr49A734@0x00350460",
+  "codePtr49AE44@0x00358BB0",
+  "codePtr49AE40@0x00358CB0",
+  "codePtr49AE3C@0x00358EC0",
+  "codePtr49B5E4@0x00375B80",
+  "codePtr474A94@0x00160300",
+  "built1FA9C8@0x001F9CF0",
+  "codePtr458384@0x00240E70",
+  "unrefThunk18CD08@0x0018CD08",
+  "unrefThunk18EA50@0x0018EA50",
+  "unrefThunk18F4A0@0x0018F4A0",
+  "unrefThunk18F4D0@0x0018F4D0",
+  "unrefThunk18F8E8@0x0018F8E8",
+]
 skip = []
 
 [mmio]
