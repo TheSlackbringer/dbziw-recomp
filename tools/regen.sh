@@ -34,7 +34,11 @@ echo "== Generating game C++ from game/$executable..."
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
-awk -v root="$root" -v output="$tmp/output/" '
+# The paths go into the recompiler's config file: on Windows (Git Bash) it is a native program that cannot open
+# /c/... paths, so write them as C:/... there.
+native_path() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s\n' "$1"; fi; }
+
+awk -v root="$(native_path "$root")" -v output="$(native_path "$tmp")/output/" '
     /^input = / { print "input = \"" root "/game/SLES_553.47\""; next }
     /^ghidra_output = / { print "ghidra_output = \"" root "/recomp/ghidra_functions.csv\""; next }
     /^output = / { print "output = \"" output "\""; next }
@@ -48,7 +52,36 @@ if ! "$recompiler" "$tmp/config.toml" > "$root/recomp/recomp.log" 2>&1; then
 fi
 
 mkdir -p "$root/recomp/output"
-rsync -rc --delete --itemize-changes "$tmp/output/" "$root/recomp/output/" > "$tmp/changes.txt"
+if command -v rsync >/dev/null 2>&1; then
+    rsync -rc --delete --itemize-changes "$tmp/output/" "$root/recomp/output/" > "$tmp/changes.txt"
+else
+    # No rsync (Git Bash on Windows): the same sync in Python. Only changed files are copied, so unchanged ones keep
+    # their times and the game build stays incremental; files the generation no longer writes are removed.
+    python=""
+    for candidate in python3 python; do
+        if "$candidate" -c 'import sys' >/dev/null 2>&1; then python="$candidate"; break; fi
+    done
+    if [[ -z "$python" ]]; then
+        echo "Neither rsync nor Python found to copy the generated files" >&2
+        exit 1
+    fi
+    "$python" - "$(native_path "$tmp")/output" "$(native_path "$root")/recomp/output" > "$tmp/changes.txt" <<'PY'
+import filecmp, shutil, sys
+from pathlib import Path
+src, dst = Path(sys.argv[1]), Path(sys.argv[2])
+fresh = {p.relative_to(src) for p in src.rglob('*') if p.is_file()}
+old = {p.relative_to(dst) for p in dst.rglob('*') if p.is_file()}
+for rel in sorted(old - fresh):
+    (dst / rel).unlink()
+    print(f'*deleting {rel.as_posix()}')
+for rel in sorted(fresh):
+    target = dst / rel
+    if not target.is_file() or not filecmp.cmp(src / rel, target, shallow=False):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src / rel, target)
+        print(f'>f {rel.as_posix()}')
+PY
+fi
 changes_count=$(wc -l < "$tmp/changes.txt")
 echo "Code generation successful: $changes_count files updated in recomp/output/"
 head -20 "$tmp/changes.txt"
