@@ -100,7 +100,7 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
   Two runs of the same build may not match in battle today (host-time dependence, issue 022): then record the
   comparison as pending, never as passed. A speed spec may still close with that comparison pending when byte-level
   evidence exists (CTests, 0 verifier mismatches, IDENTICAL boot frames), as DW5 did (user, 2026-10-29).
-- **Exact saved-frame comparison (DW5 2026-10-22; tool planned: 014):** Use `tools/debug/compare_frames.py` for renderer/shader,
+- **Exact saved-frame comparison (DW5 2026-10-22; ported in 014, 2026-10-31):** Use `tools/debug/compare_frames.py` for renderer/shader,
   VU graphics math, framebuffer/presentation changes, optimizations/refactors in those paths, and visual-regression
   investigations. This is a targeted visual debugging/correctness check, not a requirement after every change.
   Compare a small set of corresponding before/after frames covering the affected scene, with the same input/frame,
@@ -116,7 +116,7 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
   CI, launcher-only, audio-only or other changes unrelated to rendered output. It does not automatically trigger a
   full gameplay suite or replace existing sound/gameplay checks. (`tools/diff_frames.py` stays the tolerant
   port-vs-PCSX2 comparison.)
-- **Function-map and generated-code validation (DW5 2026-10-24; tool planned: 014):** Use `tools/debug/validate_function_map.py`
+- **Function-map and generated-code validation (DW5 2026-10-24; ported in 014, 2026-10-31):** Use `tools/debug/validate_function_map.py`
   when changing function maps, Ghidra exports, entry-point configuration, or recompiler logic affecting
   boundaries, branch exits or delay slots. Also use it during missing-target or omitted-instruction
   investigations. Check edited maps before regeneration; audit corresponding generated output afterwards.
@@ -207,8 +207,9 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
   - tests in `app/tests/` (CTest; today only `setup_disc` — the DW5 runtime tests: 018).
   - There is no `app/src/` yet: no game overrides, no CRI/Sofdec glue (020), no pad bridge (DBZIW uses the libpad HLE; 021).
 - `tools/` — `regen.sh`, `audit_stubs.py`, `diff_frames.py`, `fix_ghidra_csv.py`, `make_checkpoint.py`,
-  `ghidra_scripts/`, `windows/` (llvm-mingw toolchain, wine runner). *(planned: `pcsx2_reference.py`, `gsreplay/` — 017;
-  `debug/` — 014; `profile/`, `perf_ab.py`, `thread_load.py` — 010; `release/` — 007)*
+  `find_missing_entries.py` (pointer targets with no function), `debug/` (`validate_function_map.py`,
+  `compare_frames.py`), `tests/` (their Python tests), `ghidra_scripts/`, `windows/` (llvm-mingw toolchain, wine runner).
+  *(planned: `pcsx2_reference.py`, `gsreplay/` — 017; `profile/`, `perf_ab.py`, `thread_load.py` — 010; `release/` — 007)*
 - `vendor/parallel-gs-patches/` — renderer runtime patches applied to `app/deps/parallel-gs` (README step;
   not yet tracked in Git — 017).
 - Local, gitignored: `game/` (extracted PAL disc: `SLES_553.47`, `SYSTEM.CNF`, `MODULES/`, `USR/`, `mc0/`, `mc1/`
@@ -334,7 +335,10 @@ renderer fixes are runtime patches in `vendor/parallel-gs-patches/`.
   GCC. Pay close attention to jump table layouts (switch tables), epilogue register restores, and function alignment.
 - **Function boundaries:** Ghidra can merge a function into the one before it right after a `jr $ra` (DBZIW
   `0x168810`, found at runtime) or leave pointer-only targets in gaps (DW5 026); a CSV row ending on a branch used to
-  get a fabricated `NOP` delay slot (DW5 038). Validate maps before regenerating (issue 014).
+  get a fabricated `NOP` delay slot (DW5 038). A row can also run past its own end into the next function, which
+  then has no row: a tail jump `j` into it falls off the row end (DBZIW `0x1a1648`, 014). Validate maps before
+  regenerating (issue 014: `tools/find_missing_entries.py`, `tools/debug/validate_function_map.py` with the
+  generated-code audit; the map passes alone do not see that case).
 - **PAL50 vs PAL60 modes:** Infinite World boots into a 50Hz/60Hz selector screen. The runtime takes the field rate
   from the game's `SetGsCrt` (mode 3 = PAL; only modes 2/3 are recognised); the scanout guesses PAL from picture height.
   VSync cadence, CD stream rate, movies and IOP timing must all follow the selected mode (issue 019).
