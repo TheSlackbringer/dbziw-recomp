@@ -153,6 +153,9 @@ namespace ps2_syscalls
 
     void FlushCache(uint8_t *, R5900Context *ctx, PS2Runtime *)
     {
+        if (kernelTraceEnabled()) // DBZIW-DEBUG
+            std::cerr << "[kernel-trace] FlushCache mode=" << getRegU32(ctx, 4) << " ra=0x" << std::hex
+                      << getRegU32(ctx, 31) << std::dec << std::endl;
         setReturnS32(ctx, KE_OK);
     }
 

@@ -271,6 +271,9 @@ namespace ps2_syscalls
     {
         const uint32_t pathAddr = getRegU32(ctx, 4);     // $a0 - path
         const uint32_t execDataAddr = getRegU32(ctx, 5); // $a1 - t_ExecData*
+        if (kernelTraceEnabled()) // DBZIW-DEBUG
+            std::cerr << "[kernel-trace] sceSifLoadElf path=0x" << std::hex << pathAddr << " ra=0x"
+                      << getRegU32(ctx, 31) << std::dec << std::endl;
         const int32_t ret = runSifLoadElfPart(rdram, ctx, runtime, pathAddr, "all", execDataAddr);
         setReturnS32(ctx, ret);
     }
@@ -425,6 +428,9 @@ namespace ps2_syscalls
 
         if (!runtime->hasFunction(handler))
         {
+            if (kernelTraceEnabled()) // DBZIW-DEBUG
+                std::cerr << "[kernel-trace] installed service 0x" << std::hex << installedNumber << " handler 0x"
+                          << handler << " not compiled: KE_ERROR ra=0x" << getRegU32(ctx, 31) << std::dec << std::endl;
             setReturnS32(ctx, KE_ERROR);
             return true;
         }

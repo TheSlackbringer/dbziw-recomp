@@ -21,7 +21,12 @@ namespace ps2_syscalls
                 if (runtime->hasFunction(handler))
                     ctx->pc = handler;
                 else
+                {
+                    if (kernelTraceEnabled()) // DBZIW-DEBUG
+                        std::cerr << "[kernel-trace] installed service -8 handler 0x" << std::hex << handler
+                                  << " not compiled: KE_ERROR" << std::dec << std::endl;
                     setReturnS32(ctx, KE_ERROR);
+                }
                 return true;
             }
         }
