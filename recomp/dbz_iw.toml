@@ -228,6 +228,12 @@ untracked_stubs = []
 #  - Likely functions without a confirmed use (pointer or address build only), added so they can never stop the game.
 #  - Small Ghidra-only functions with no reference found anywhere; the row before ends on their first instructions.
 #    Added so they can never stop the game, as DW5 026 did with an unreferenced handler (unrefThunkXXXXXX).
+#  - The two Ghidra functions a row still covers without an entry (014's Ghidra cross-check): one unreferenced
+#    (unrefFunc159D50, swallowed by FUN_00159d38), and fun1a1548TailTarget, which FUN_001a1548 tail-jumps into
+#    (the function behind 020's old stop after the opening movie).
+#  - Code in gaps between functions that nothing references anywhere (no pointer, jump, branch, address build
+#    or Ghidra reference; tests/find_code_in_gaps_014.py): likely unused library code, added so it can never
+#    stop the game if the game computes such an address at run time (unrefGapXXXXXX).
 entry_points = [
   "fun1243a0CaseTail@0x00124790",
   "fun1243a0Case0Branch@0x001247F8",
@@ -288,6 +294,51 @@ entry_points = [
   "unrefThunk18F4A0@0x0018F4A0",
   "unrefThunk18F4D0@0x0018F4D0",
   "unrefThunk18F8E8@0x0018F8E8",
+  "unrefFunc159D50@0x00159D50",
+  "fun1a1548TailTarget@0x001A1648",
+  "unrefGap1054E4@0x001054E4",
+  "unrefGap15B4C8@0x0015B4C8",
+  "unrefGap15D9E0@0x0015D9E0",
+  "unrefGap1602D8@0x001602D8",
+  "unrefGap1629F0@0x001629F0",
+  "unrefGap162FF8@0x00162FF8",
+  "unrefGap163458@0x00163458",
+  "unrefGap166758@0x00166758",
+  "unrefGap166768@0x00166768",
+  "unrefGap166778@0x00166778",
+  "unrefGap166788@0x00166788",
+  "unrefGap166B50@0x00166B50",
+  "unrefGap166C68@0x00166C68",
+  "unrefGap166C78@0x00166C78",
+  "unrefGap166FE0@0x00166FE0",
+  "unrefGap166FF0@0x00166FF0",
+  "unrefGap1678E0@0x001678E0",
+  "unrefGap167D48@0x00167D48",
+  "unrefGap167D78@0x00167D78",
+  "unrefGap16B950@0x0016B950",
+  "unrefGap16B960@0x0016B960",
+  "unrefGap16C698@0x0016C698",
+  "unrefGap16C6C0@0x0016C6C0",
+  "unrefGap18CDD8@0x0018CDD8",
+  "unrefGap18D510@0x0018D510",
+  "unrefGap18D7D0@0x0018D7D0",
+  "unrefGap18DCB0@0x0018DCB0",
+  "unrefGap18E980@0x0018E980",
+  "unrefGap1927C8@0x001927C8",
+  "unrefGap195810@0x00195810",
+  "unrefGap1959B8@0x001959B8",
+  "unrefGap195AB0@0x00195AB0",
+  "unrefGap195C60@0x00195C60",
+  "unrefGap195D50@0x00195D50",
+  "unrefGap195D58@0x00195D58",
+  "unrefGap197E28@0x00197E28",
+  "unrefGap1A10D0@0x001A10D0",
+  "unrefGap1A5110@0x001A5110",
+  "unrefGap1AF140@0x001AF140",
+  "unrefGap1AF160@0x001AF160",
+  "unrefGap285650@0x00285650",
+  "unrefGap285688@0x00285688",
+  "unrefGap285A48@0x00285A48",
 ]
 skip = []
 
