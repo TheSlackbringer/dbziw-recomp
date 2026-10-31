@@ -301,6 +301,7 @@ renderer fixes are runtime patches in `vendor/parallel-gs-patches/`.
   (FIRST), decompile_function_by_address, disassemble_function, get_function_by_address, get_xrefs_to/from,
   get_function_calls, list_functions/strings/segments, rename_function_by_address, set_*_comment. Limits: hardware
   registers (0x10000000+, 0x12000000+) and scratchpad (0x70000000+) have no xrefs → use `[mmio]` map in `dbz_iw.toml`.
+  Unreachable (GUI closed) → headless.
 - **Second MCP, `ghidra-bethington`** (`mcp__ghidra-bethington__*`; bethington GhidraMCP 7.0.0 in the project window,
   `http://127.0.0.1:8089/`): reaches every program open in the project, so pass `program=<name>` instead of asking for
   a tab switch (`list_open_programs` shows the names). Call it through its MCP tools, not `curl`; tools missing → ask
@@ -308,7 +309,12 @@ renderer fixes are runtime patches in `vendor/parallel-gs-patches/`.
 - **Switching projects (works unattended):** `open_project` with `path=<absolute .gpr>`, `headless=false`,
   `program=/<program>`, then `get_program_info` to confirm. It goes through Ghidra's own File → Open Project: saves
   changed programs and tool layouts, closes the old project's CodeBrowser and opens one on the new program (8080
-  follows). It refuses with an error, not a dialog, while analysis runs or a change can't be saved. This needs the
+  follows). It refuses with an error, not a dialog, while analysis runs or a change can't be saved. A program that
+  was never analysed makes Ghidra ask "Analyze?": the switch waits for that answer and the bridge times out
+  (`No complete response for POST /open_project`). Don't call `open_project` again: ask the user to answer the
+  prompt, then confirm with `get_program_info` and `list_open_programs`. `open_project` ignores `dry_run=true` (it
+  switched for real on 2026-10-31): never "preview" a switch. The tool is in bethington's `headless` group
+  (`load_tool_group("headless")`). This needs the
   locally patched bethington plugin (`notes/PROJECT_SETUP.md`); the stock 7.0.0 switch breaks the GUI. If the project
   window doesn't follow or the CodeBrowser just closes, stop and tell the user.
   Never call `exit_ghidra`, `delete_file`, `archive_project`/`restore_project`, `import_*`, `prompt_policy` or the
@@ -316,10 +322,12 @@ renderer fixes are runtime patches in `vendor/parallel-gs-patches/`.
   bind 8080.
 - ONE source project `ghidra/dbziw.gpr` (renames/comments go here, via GUI/MCP). Headless never runs on it: copy
   `ghidra/dbziw.gpr` + `ghidra/dbziw.rep` to your scratch dir, run
-  `analyzeHeadless <dir> dbziw -process SLES_553.47 -noanalysis -readOnly -scriptPath tools/ghidra_scripts -postScript DecompileAt.java 0xADDR ...`,
-  then delete the copy.
+  `analyzeHeadless <dir> dbziw -process SLES_553.47 -noanalysis -readOnly -scriptPath tools/ghidra_scripts
+  -postScript DecompileAt.java 0xADDR ...` (also `CallersOf.java`, `DecompileAll.java <out>`), then delete the copy.
+  Output lines are prefixed `INFO  <Script>.java>`; batch addresses (30–60 s JVM start per run).
 - Quick look at one function: the generated `recomp/output/*_0x<addr>.cpp` comments every instruction.
-- IOP module bases at run time (Ghidra addresses are module-relative), known so far: `CRI_ADXI.IRX` 0x16a00 (020 M1).
+- IOP module bases at run time (Ghidra addresses are module-relative), known so far: `CRI_ADXI.IRX` 0x16a00 (020 M1),
+  `LIBSD.IRX` 0x10d00 (020 M3b).
 
 ### Pitfalls
 - **Metrowerks CodeWarrior 2.4.1.01 peculiarities:** Dimps compiled Infinite World with Metrowerks CodeWarrior rather than
