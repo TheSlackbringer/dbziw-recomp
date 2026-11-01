@@ -1480,6 +1480,28 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
             const uint32_t qwc = m_ioRegisters[channelBase + 0x20];
             m_dmaStartCount.fetch_add(1, std::memory_order_relaxed);
 
+            // DBZIW-DEBUG (020): PS2X_GIF_PROBE=<addr> logs, at each GIF DMA start, an FNV-1a hash of the 1 KiB of
+            // RDRAM at addr whenever it differs from the last one logged (what a texture upload from there carries).
+            static const uint32_t s_gifProbe = []
+            {
+                const char *v = std::getenv("PS2X_GIF_PROBE");
+                return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 0)) & PS2_RAM_MASK : 0u;
+            }();
+            if (s_gifProbe != 0u && channelBase == 0x1000A000u && m_rdram && s_gifProbe + 1024u <= PS2_RAM_SIZE)
+            {
+                static uint32_t s_lastHash = 0u;
+                uint32_t hash = 2166136261u;
+                for (uint32_t i = 0; i < 1024u; ++i)
+                    hash = (hash ^ m_rdram[s_gifProbe + i]) * 16777619u;
+                if (hash != s_lastHash || m_path3Masked)
+                {
+                    s_lastHash = hash;
+                    std::fprintf(stderr, "[gif-probe] tick=%llu hash=%08x path3Masked=%d parked=%zu\n",
+                                 static_cast<unsigned long long>(gs().vsyncTick.load()), hash, m_path3Masked ? 1 : 0,
+                                 m_path3MaskedFifo.size());
+                }
+            }
+
             if (tryProcessScratchpadDma(channelBase, value))
             {
                 return true;
@@ -2466,6 +2488,10 @@ void PS2Memory::flushMaskedPath3Packets(bool drainImmediately)
             m_gifPacketCallback(packetData, packetSize);
     };
 
+    static const bool s_gifProbeLog = std::getenv("PS2X_GIF_PROBE") != nullptr; // DBZIW-DEBUG (020)
+    if (s_gifProbeLog)
+        std::fprintf(stderr, "[gif-probe] tick=%llu released %zu parked PATH3 packets\n",
+                     static_cast<unsigned long long>(gs().vsyncTick.load()), m_path3MaskedFifo.size());
     for (const auto &packet : m_path3MaskedFifo)
     {
         if (packet.size() >= 16u)

@@ -325,6 +325,52 @@ namespace
     void mpegGetPicture(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) { getPicture(rdram, ctx, runtime, true); }
     void mpegGetPictureRaw8(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) { getPicture(rdram, ctx, runtime, false); }
 
+    // DBZIW-DEBUG (020): PS2X_SOFDEC_CLOCK_TRACE=1 logs every adxt_GetTime result (the sound clock Sofdec times the
+    // pictures by) with the VSync tick. The game's own function still computes it.
+    constexpr uint32_t kAdxtGetTime = 0x0015EF00u;
+    PS2Runtime::RecompiledFunction g_adxtGetTime = nullptr;
+
+    void adxtGetTimeTrace(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const bool entry = ctx->pc == kAdxtGetTime;
+        const uint32_t adxt = getRegU32(ctx, 4), timeOut = getRegU32(ctx, 5), unitOut = getRegU32(ctx, 6);
+        g_adxtGetTime(rdram, ctx, runtime);
+        if (entry)
+            std::fprintf(stderr, "[sofdec-clock] tick=%llu adxt=0x%x state=%u time=%d unit=%d\n",
+                         static_cast<unsigned long long>(runtime->memory().gs().vsyncTick.load()), adxt,
+                         getMemPtr(rdram, adxt + 1u) ? *getMemPtr(rdram, adxt + 1u) : 0u,
+                         static_cast<int32_t>(read32(rdram, timeOut)), static_cast<int32_t>(read32(rdram, unitOut)));
+    }
+
+    // DBZIW-DEBUG (020): with the clock trace, every mwPlyGetCurFrm (0x1884e0): the picture handed to the game (its
+    // frame object, time +0x44 / unit +0x48) and the player's counters (+0x8c pictures taken, +0x94 skipped late).
+    constexpr uint32_t kMwPlyGetCurFrm = 0x001884E0u;
+    PS2Runtime::RecompiledFunction g_mwPlyGetCurFrm = nullptr;
+
+    void mwPlyGetCurFrmTrace(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const bool entry = ctx->pc == kMwPlyGetCurFrm;
+        const uint32_t mwply = getRegU32(ctx, 4), info = getRegU32(ctx, 5);
+        const uint32_t takenBefore = read32(rdram, mwply + 0x8Cu);
+        // the game's DMA queue 0 (FUN_0013b760): entries still waiting when the next picture is taken
+        const uint32_t queued = read32(rdram, 0x004AD0C4u) & 0xFFFFu;
+        g_mwPlyGetCurFrm(rdram, ctx, runtime);
+        if (!entry)
+            return;
+        const uint32_t taken = read32(rdram, mwply + 0x8Cu), frame = read32(rdram, mwply + 0x88u);
+        // FNV-1a of the picture's first 1 KiB (info + 0: its data, + 4: its number), to find it again in the uploads
+        uint32_t hash = 2166136261u;
+        if (const uint8_t *p = read32(rdram, info) ? getMemPtr(rdram, read32(rdram, info)) : nullptr)
+            for (uint32_t i = 0; i < 1024u; ++i)
+                hash = (hash ^ p[i]) * 16777619u;
+        std::fprintf(stderr, "[sofdec-frame] tick=%llu picture=%u hash=%08x queued=%u got=%u taken=%u skipped=%u frameTime=%d unit=%d\n",
+                     static_cast<unsigned long long>(runtime->memory().gs().vsyncTick.load()),
+                     read32(rdram, info) ? read32(rdram, info + 4u) : 0u, read32(rdram, info) ? hash : 0u, queued,
+                     read32(rdram, info) != 0u && taken != takenBefore ? 1u : 0u, taken, read32(rdram, mwply + 0x94u),
+                     taken != takenBefore ? static_cast<int32_t>(read32(rdram, frame + 0x44u)) : -1,
+                     taken != takenBefore ? static_cast<int32_t>(read32(rdram, frame + 0x48u)) : 0);
+    }
+
     void applyMovies(PS2Runtime &runtime)
     {
         struct Entry
@@ -355,6 +401,15 @@ namespace
         for (const Entry &entry : entries)
             runtime.replaceFunction(entry.address, entry.function);
         runtime.memory().setIpuInputHook(&g_ipuHook);
+        if (std::getenv("PS2X_SOFDEC_CLOCK_TRACE") && read32(rdram, kAdxtGetTime) == 0x27BDFFB0u)
+        {
+            g_adxtGetTime = runtime.lookupFunction(kAdxtGetTime);
+            if (g_adxtGetTime)
+                runtime.replaceFunction(kAdxtGetTime, &adxtGetTimeTrace);
+            g_mwPlyGetCurFrm = read32(rdram, kMwPlyGetCurFrm) == 0x27BDFFB0u ? runtime.lookupFunction(kMwPlyGetCurFrm) : nullptr;
+            if (g_mwPlyGetCurFrm)
+                runtime.replaceFunction(kMwPlyGetCurFrm, &mwPlyGetCurFrmTrace);
+        }
     }
 }
 

@@ -448,7 +448,7 @@ namespace
 //   PS2X_EXIT_TICK=<n>       dump final.png and _Exit(0) at vsync tick n
 //   PS2X_INPUT="t:BTN[+BTN]:dur,..."  scripted pad presses at vsync tick t
 //   PS2X_CTRL=<file>         command file polled ~10x/s, consumed on read:
-//       press BTN[+BTN] <ticks> | shot <path.png> | hostshot <path.png> | quit | tick <path.txt>
+//       press BTN[+BTN] <ticks> | shot <path.png> | burst <n> <prefix> | hostshot <path.png> | quit | tick <path.txt>
 //       threads <path.txt>   (EE threads, semaphores, event flags)
 //   PS2X_THREADS_AT_EXIT=1   print the thread dump to stderr at the exit tick
 // Buttons: UP DOWN LEFT RIGHT START SELECT CROSS CIRCLE SQUARE TRIANGLE
@@ -595,6 +595,9 @@ namespace ps2x_dev
         uint64_t lastDumpBucket = std::numeric_limits<uint64_t>::max();
         std::string ctrlPath;
         std::vector<std::string> hostShots;
+        uint32_t burstLeft = 0u;
+        std::string burstPrefix;
+        std::vector<std::pair<uint64_t, std::vector<uint8_t>>> burstFrames;
         std::chrono::steady_clock::time_point lastCtrlPoll{};
         bool stats = false;
         std::chrono::steady_clock::time_point statsStart{};
@@ -674,6 +677,14 @@ namespace ps2x_dev
                     ls >> path;
                     writePng(path);
                 }
+                else if (cmd == "burst")
+                {
+                    // DBZIW-DEBUG (020): the presented frame at each of the next n harness steps (one per host
+                    // frame), kept in memory and written as <prefix>_<tick>_<index>.png afterwards, so the copies
+                    // do not slow the frames they record.
+                    ls >> burstLeft >> burstPrefix;
+                    burstFrames.clear();
+                }
                 else if (cmd == "hostshot")
                 {
                     std::string path;
@@ -711,6 +722,41 @@ namespace ps2x_dev
                     std::_Exit(0);
                 }
             }
+        }
+
+        void stepBurst(uint64_t tick)
+        {
+            if (burstLeft == 0u || s_lastFrame.empty() || s_lastFrameW == 0u || s_lastFrameH == 0u)
+                return;
+            const size_t stride = s_lastFrame.size() / std::max<size_t>(1u, s_lastFrameRows);
+            std::vector<uint8_t> px(static_cast<size_t>(s_lastFrameW) * s_lastFrameH * 4u);
+            for (uint32_t y = 0; y < s_lastFrameH; ++y)
+                std::memcpy(px.data() + static_cast<size_t>(y) * s_lastFrameW * 4u,
+                            s_lastFrame.data() + static_cast<size_t>(y) * stride,
+                            static_cast<size_t>(s_lastFrameW) * 4u);
+            burstFrames.emplace_back(tick, std::move(px));
+            if (--burstLeft != 0u)
+                return;
+            std::thread([frames = std::move(burstFrames), prefix = burstPrefix, w = s_lastFrameW, h = s_lastFrameH]() mutable {
+                size_t index = 0u;
+                for (auto &[t, px] : frames)
+                {
+                    for (size_t i = 3; i < px.size(); i += 4)
+                        px[i] = 0xFF;
+                    Image img{};
+                    img.data = px.data();
+                    img.width = static_cast<int>(w);
+                    img.height = static_cast<int>(h);
+                    img.mipmaps = 1;
+                    img.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+                    // steps follow host frames, so a tick can come twice: the burst index keeps both
+                    char name[40];
+                    std::snprintf(name, sizeof(name), "_%06llu_%02zu.png", static_cast<unsigned long long>(t), index++);
+                    ExportImage(img, (prefix + name).c_str());
+                }
+                std::fprintf(stderr, "[dev] burst %s: %zu frames written\n", prefix.c_str(), frames.size());
+            }).detach();
+            burstFrames = {};
         }
 
         void captureHostFrame()
@@ -766,9 +812,11 @@ namespace ps2x_dev
         }
 
         // DW5XL-DEBUG: PS2X_RAM_DUMP_TICKS="t1,t2" writes ram_<tick>.bin (32 MiB RDRAM) to the dump dir;
-        // PS2X_RAM_WATCH="addr:len" logs every tick on which that RDRAM range changed, with its new bytes.
+        // PS2X_RAM_WATCH="addr:len" logs every tick on which that RDRAM range changed, with its new bytes;
+        // "addr:len:stride:count" watches count such ranges stride bytes apart, one field of every object in an array
+        // (DBZIW-DEBUG, issue 020: the ADXT players' state bytes).
         std::vector<uint64_t> ramDumpTicks;
-        uint32_t ramWatchAddr = 0u, ramWatchLen = 0u;
+        uint32_t ramWatchAddr = 0u, ramWatchLen = 0u, ramWatchStride = 0u, ramWatchCount = 1u;
         std::vector<uint8_t> ramWatchLast;
         bool ramDebugInit = false;
 
@@ -790,8 +838,16 @@ namespace ps2x_dev
                 {
                     char *end = nullptr;
                     ramWatchAddr = static_cast<uint32_t>(std::strtoul(w, &end, 0)) & PS2_RAM_MASK;
-                    ramWatchLen = (end && *end == ':') ? static_cast<uint32_t>(std::strtoul(end + 1, nullptr, 0)) : 16u;
+                    ramWatchLen = (end && *end == ':') ? static_cast<uint32_t>(std::strtoul(end + 1, &end, 0)) : 16u;
+                    if (end && *end == ':')
+                    {
+                        ramWatchStride = static_cast<uint32_t>(std::strtoul(end + 1, &end, 0));
+                        if (end && *end == ':')
+                            ramWatchCount = std::max<uint32_t>(1u, static_cast<uint32_t>(std::strtoul(end + 1, nullptr, 0)));
+                    }
                     ramWatchLen = std::min<uint32_t>(ramWatchLen, PS2_RAM_SIZE - ramWatchAddr);
+                    if (ramWatchStride * (ramWatchCount - 1u) + ramWatchLen > PS2_RAM_SIZE - ramWatchAddr)
+                        ramWatchCount = 1u;
                 }
             }
             const uint8_t *ram = runtime->memory().getRDRAM();
@@ -811,16 +867,26 @@ namespace ps2x_dev
             }
             if (ramWatchLen != 0u)
             {
-                const uint8_t *cur = ram + ramWatchAddr;
-                if (ramWatchLast.size() != ramWatchLen || std::memcmp(ramWatchLast.data(), cur, ramWatchLen) != 0)
+                std::vector<uint8_t> cur;
+                for (uint32_t r = 0; r < ramWatchCount; ++r)
                 {
-                    ramWatchLast.assign(cur, cur + ramWatchLen);
+                    const uint8_t *range = ram + ramWatchAddr + r * ramWatchStride;
+                    cur.insert(cur.end(), range, range + ramWatchLen);
+                }
+                if (ramWatchLast != cur)
+                {
+                    ramWatchLast = cur;
                     std::fprintf(stderr, "[ramwatch] tick=%llu addr=%08x:", static_cast<unsigned long long>(tick), ramWatchAddr);
-                    for (uint32_t i = 0; i + 4u <= ramWatchLen; i += 4u)
+                    for (uint32_t r = 0; r < ramWatchCount; ++r)
                     {
-                        uint32_t v;
-                        std::memcpy(&v, cur + i, 4u);
-                        std::fprintf(stderr, "%s%08x", (i % 16u) == 0u ? " | " : " ", v);
+                        if (ramWatchCount > 1u)
+                            std::fprintf(stderr, " |");
+                        for (uint32_t i = 0; i + 4u <= ramWatchLen; i += 4u)
+                        {
+                            uint32_t v;
+                            std::memcpy(&v, cur.data() + r * ramWatchLen + i, 4u);
+                            std::fprintf(stderr, "%s%08x", ramWatchCount == 1u && (i % 16u) == 0u ? " | " : " ", v);
+                        }
                     }
                     std::fprintf(stderr, "\n");
                 }
@@ -833,6 +899,7 @@ namespace ps2x_dev
             stepRamDebug(tick);
             pollCtrl(tick);
             stepInput(tick);
+            stepBurst(tick);
 
             if (dumpEvery != 0u)
             {
