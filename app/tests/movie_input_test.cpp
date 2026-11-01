@@ -2,13 +2,8 @@
 // known output, fed by a DMA4 chain the way Sofdec feeds it (one REF tag per 2,048-byte sector, REFE on the last),
 // including a no-data refill and Sofdec's save/restore of the IPU position between pictures.
 #include "dbziw_movie_input.h"
+#include "movie_test_stream.h"
 #include "runtime/ps2_memory.h"
-
-extern "C"
-{
-#include <libavcodec/avcodec.h>
-#include <libavutil/frame.h>
-}
 
 #include <cstdio>
 #include <cstdlib>
@@ -19,70 +14,7 @@ extern "C"
 
 namespace
 {
-    void require(bool ok, const std::string &what)
-    {
-        if (!ok)
-            throw std::runtime_error(what);
-    }
-
-    constexpr int kWidth = 128, kHeight = 96, kFrames = 9;
-    constexpr uint8_t kLuma[kFrames] = {40, 70, 100, 130, 160, 190, 220, 90, 150};
-
-    // Textured pictures around a known mean luma, GOP of 9 with B pictures, so decode order differs from display order.
-    std::vector<uint8_t> encodeStream()
-    {
-        const AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_MPEG2VIDEO);
-        require(codec != nullptr, "FFmpeg has no MPEG-2 video encoder");
-        AVCodecContext *c = avcodec_alloc_context3(codec);
-        c->width = kWidth;
-        c->height = kHeight;
-        c->time_base = AVRational{1, 25};
-        c->framerate = AVRational{25, 1};
-        c->pix_fmt = AV_PIX_FMT_YUV420P;
-        c->gop_size = kFrames;
-        c->max_b_frames = 2;
-        c->qmin = c->qmax = 2;
-        require(avcodec_open2(c, codec, nullptr) == 0, "cannot open the MPEG-2 encoder");
-        AVFrame *frame = av_frame_alloc();
-        frame->format = c->pix_fmt;
-        frame->width = kWidth;
-        frame->height = kHeight;
-        require(av_frame_get_buffer(frame, 0) == 0, "cannot allocate a frame");
-        AVPacket *packet = av_packet_alloc();
-        std::vector<uint8_t> stream;
-        const auto drain = [&]
-        {
-            while (avcodec_receive_packet(c, packet) == 0)
-            {
-                stream.insert(stream.end(), packet->data, packet->data + packet->size);
-                av_packet_unref(packet);
-            }
-        };
-        for (int i = 0; i < kFrames; ++i)
-        {
-            require(av_frame_make_writable(frame) == 0, "frame not writable");
-            for (int y = 0; y < kHeight; ++y)
-                for (int x = 0; x < kWidth; ++x)
-                    frame->data[0][y * frame->linesize[0] + x] =
-                        static_cast<uint8_t>(kLuma[i] + ((x * 7 + y * 13 + i * 5) % 32) - 16);
-            for (int y = 0; y < kHeight / 2; ++y)
-            {
-                std::memset(frame->data[1] + y * frame->linesize[1], 128, kWidth / 2);
-                std::memset(frame->data[2] + y * frame->linesize[2], 128, kWidth / 2);
-            }
-            frame->pts = i;
-            require(avcodec_send_frame(c, frame) == 0, "encoder rejected a frame");
-            drain();
-        }
-        avcodec_send_frame(c, nullptr);
-        drain();
-        av_packet_free(&packet);
-        av_frame_free(&frame);
-        avcodec_free_context(&c);
-        for (int i = 0; i < 4; ++i) // Sofdec's end code (0x492c08): four sequence end codes
-            stream.insert(stream.end(), {0x00, 0x00, 0x01, 0xB7});
-        return stream;
-    }
+    using namespace movie_test;
 
     struct Hook : PS2Memory::IpuInputHook
     {
@@ -90,41 +22,6 @@ namespace
         uint32_t ipuBp() const override { return input->ipuBp(); }
         void ipuBclr(uint32_t bp) override { input->bclr(bp); }
     };
-
-    constexpr uint32_t kRing = 0x00100000u, kTags = 0x00080000u, kSector = 2048u;
-    constexpr uint32_t kChcr = 0x1000B400u, kMadr = 0x1000B410u, kQwc = 0x1000B420u, kTadr = 0x1000B430u;
-
-    // Sofdec's feeder (FUN_001a0928/FUN_001a05c0): tags {addr << 32 | id << 28 | 128 QW}, REF then REFE.
-    void startChain(PS2Memory &memory, uint32_t firstSector, uint32_t count)
-    {
-        uint8_t *ram = memory.getRDRAM();
-        for (uint32_t i = 0; i < count; ++i)
-        {
-            const uint64_t id = (i + 1u == count) ? 0u : 3u;
-            const uint64_t tag = (static_cast<uint64_t>(kRing + (firstSector + i) * kSector) << 32u) | (id << 28u) | 128u;
-            std::memcpy(ram + kTags + i * 16u, &tag, sizeof(tag));
-            std::memset(ram + kTags + i * 16u + 8u, 0, 8u);
-        }
-        memory.write32(kQwc, 0u);
-        memory.write32(kTadr, kTags);
-        memory.write32(kChcr, 0x105u); // source chain, from memory, start
-    }
-
-    // Sofdec's save and restore around a picture request (FUN_001a0b68 / FUN_001a0c58), for a contiguous ring.
-    void saveAndRestore(PS2Memory &memory)
-    {
-        const uint32_t bp = memory.read32(0x10002020u);
-        const uint32_t held = ((bp >> 8u) & 0xFu) + ((bp >> 16u) & 3u);
-        memory.write32(kChcr, memory.read32(kChcr) & ~0x100u);
-        const uint32_t chcr = memory.read32(kChcr), madr = memory.read32(kMadr);
-        const uint32_t qwc = memory.read32(kQwc), tadr = memory.read32(kTadr);
-        memory.write32(0x10002000u, bp & 0x7Fu); // BCLR at the saved bit
-        memory.write32(kMadr, madr - held * 16u);
-        memory.write32(kTadr, tadr);
-        memory.write32(kQwc, qwc + held);
-        if (qwc + held != 0u)
-            memory.write32(kChcr, chcr | 0x100u);
-    }
 
     double meanLuma(const ps2x::mpeg::DecodedFrame &frame)
     {
@@ -140,10 +37,7 @@ namespace
         PS2Memory memory;
         require(memory.initialize(), "PS2Memory::initialize failed");
         memory.write32(0x1000E000u, 1u); // D_CTRL DMAE
-        const uint32_t sectors = static_cast<uint32_t>((stream.size() + kSector - 1u) / kSector);
-        require(sectors >= 2u, "synthetic stream shorter than two sectors (" + std::to_string(stream.size()) + " bytes)");
-        std::memset(memory.getRDRAM() + kRing, 0, sectors * kSector);
-        std::memcpy(memory.getRDRAM() + kRing, stream.data(), stream.size());
+        const uint32_t sectors = loadRing(memory, stream);
 
         dbziw::movies::VideoInput input;
         Hook hook;
@@ -180,7 +74,7 @@ namespace
             maxHeld = std::max(maxHeld, input.unusedQuadwords());
             require(input.unusedQuadwords() <= 10u, "more input held than the IPU can hold");
             ++pictures;
-            saveAndRestore(memory);
+            restore(memory, save(memory));
         }
         require(pictures == kFrames, "decoded " + std::to_string(pictures) + " of " + std::to_string(kFrames) + " pictures");
         require(noData == 1u, "expected exactly one no-data refill, got " + std::to_string(noData));
