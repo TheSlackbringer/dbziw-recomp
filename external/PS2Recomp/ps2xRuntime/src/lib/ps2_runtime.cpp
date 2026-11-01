@@ -504,7 +504,9 @@ namespace ps2x_dev
             {"START", 0x0008u}, {"ENTER", 0x0008u}, {"R3", 0x0004u}, {"L3", 0x0002u}, {"SELECT", 0x0001u},
             {"SQUARE", 0x8000u}, {"CROSS", 0x4000u}, {"X", 0x4000u}, {"CIRCLE", 0x2000u},
             {"O", 0x2000u}, {"TRIANGLE", 0x1000u}, {"R1", 0x0800u}, {"L1", 0x0400u},
-            {"R2", 0x0200u}, {"L2", 0x0100u}};
+            {"R2", 0x0200u}, {"L2", 0x0100u},
+            // DBZIW-DEBUG (issue 020): the left stick at full deflection, for screens that ignore the D-pad
+            {"LSTICK_UP", 0x10000u}, {"LSTICK_DOWN", 0x20000u}, {"LSTICK_LEFT", 0x40000u}, {"LSTICK_RIGHT", 0x80000u}};
         const auto it = k.find(n);
         if (it == k.end())
         {

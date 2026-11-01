@@ -421,7 +421,13 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
         pressed = gState.pressed;
         std::memcpy(data + 4, gState.sticks.data(), gState.sticks.size());
     }
-    pressed |= static_cast<uint16_t>(ps2x_dev::g_padPressedMask.load(std::memory_order_relaxed));
+    const uint32_t scripted = ps2x_dev::g_padPressedMask.load(std::memory_order_relaxed);
+    pressed |= static_cast<uint16_t>(scripted);
+    // DBZIW-DEBUG (issue 020): scripted left-stick directions (LSTICK_*), bytes 6/7 = LX/LY, 0x00 left/up
+    if (scripted & 0x40000u) data[6] = 0x00u;
+    else if (scripted & 0x80000u) data[6] = 0xFFu;
+    if (scripted & 0x10000u) data[7] = 0x00u;
+    else if (scripted & 0x20000u) data[7] = 0xFFu;
     const uint16_t buttons = static_cast<uint16_t>(~pressed);
     data[2] = static_cast<uint8_t>(buttons);
     data[3] = static_cast<uint8_t>(buttons >> 8);
