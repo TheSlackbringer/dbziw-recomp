@@ -18,6 +18,33 @@ void equal(uint64_t actual,uint64_t expected,const char*field,Case c,int variant
     if(actual!=expected) {++failures;std::printf("FAIL case=%u variant=%d %s actual=%llx expected=%llx\n",
         unsigned(c),variant,field,(unsigned long long)actual,(unsigned long long)expected);}
 }
+// PMFHL from the EE Core Instruction Set Manual: LO and HI are 128 bits, words 0-1 from multiply unit 0
+// (lo/hi), words 2-3 from unit 1 (lo1/hi1). Independent of the runtime's helpers.
+std::array<uint32_t,4> pmfhlReference(uint32_t fmt,uint64_t lo,uint64_t hi,uint64_t lo1,uint64_t hi1) {
+    const uint32_t L[4]={uint32_t(lo),uint32_t(lo>>32),uint32_t(lo1),uint32_t(lo1>>32)};
+    const uint32_t H[4]={uint32_t(hi),uint32_t(hi>>32),uint32_t(hi1),uint32_t(hi1>>32)};
+    const auto sat32=[](uint32_t high,uint32_t low) {
+        const int64_t v=int64_t((uint64_t(high)<<32)|low);
+        return uint64_t(v>0x7fffffffLL?0x7fffffffLL:v<-0x80000000LL?-0x80000000LL:v);
+    };
+    const auto sat16=[](uint32_t word) {
+        const int32_t v=int32_t(word);
+        return uint32_t(uint16_t(v>0x7fff?0x7fff:v<-0x8000?-0x8000:v));
+    };
+    const auto halves=[](const std::array<uint32_t,8>&h) {
+        return std::array<uint32_t,4>{h[0]|h[1]<<16,h[2]|h[3]<<16,h[4]|h[5]<<16,h[6]|h[7]<<16};
+    };
+    switch(fmt) {
+    case 0: return {L[0],H[0],L[2],H[2]};                                               // LW
+    case 1: return {L[1],H[1],L[3],H[3]};                                               // UW
+    case 2: { const uint64_t a=sat32(H[0],L[0]),b=sat32(H[2],L[2]);                      // SLW
+              return {uint32_t(a),uint32_t(a>>32),uint32_t(b),uint32_t(b>>32)}; }
+    case 3: return halves({L[0]&0xffff,L[1]&0xffff,H[0]&0xffff,H[1]&0xffff,             // LH
+                           L[2]&0xffff,L[3]&0xffff,H[2]&0xffff,H[3]&0xffff});
+    default: return halves({sat16(L[0]),sat16(L[1]),sat16(H[0]),sat16(H[1]),            // SH
+                            sat16(L[2]),sat16(L[3]),sat16(H[2]),sat16(H[3])});
+    }
+}
 }
 void runTlbNativeTests(PS2Runtime&, int&, int&);
 int main() {
@@ -242,6 +269,31 @@ int main() {
         if(c.pc==shared+0x1c0)runtime.lookupFunction(c.pc)(ram,&c,&runtime);
         equal(c.pc,0x2220,"nonlocal_native_target_return",Count,13);
         equal(c.cop0_entryhi,0x00600042,"nonlocal_native_target_effect",Count,13);
+    }
+    // PMFHL must read both multiply units (DBZIW issue 020: CodeWarrior's 64-bit multiply reads its unit-1
+    // low×low product back with PMFHL.LW; Sofdec's movie clock stood still without it). Case Count, variants
+    // 20+fmt; one set saturates SLW/SH, the other does not.
+    for(uint32_t fmt=0;fmt<5;++fmt) for(const auto &set:std::array<std::array<uint64_t,4>,2>{{
+            {{0x1111222233334444ull,0x5555666677778888ull,0x9999aaaabbbbccccull,0xddddeeeeffff0001ull}},
+            {{0x0000000580000005ull,0xfffffffaffffffffull,0x0000700000001234ull,0xffffffff00000000ull}}}}) {
+        R5900Context c;c.pc=pmfhlFixture(fmt);
+        SET_GPR_U64((&c),4,set[0]);SET_GPR_U64((&c),5,set[1]);
+        SET_GPR_U64((&c),6,set[2]);SET_GPR_U64((&c),7,set[3]);SET_GPR_U32((&c),31,0x2220);
+        runtime.lookupFunction(c.pc)(ram,&c,&runtime);
+        uint32_t got[4];std::memcpy(got,&c.r[2],sizeof(got));
+        const auto want=pmfhlReference(fmt,set[0],set[1],set[2],set[3]);
+        static const char*fields[5][4]={
+            {"pmfhl_lw_w0","pmfhl_lw_w1","pmfhl_lw_w2","pmfhl_lw_w3"},{"pmfhl_uw_w0","pmfhl_uw_w1","pmfhl_uw_w2","pmfhl_uw_w3"},
+            {"pmfhl_slw_w0","pmfhl_slw_w1","pmfhl_slw_w2","pmfhl_slw_w3"},{"pmfhl_lh_w0","pmfhl_lh_w1","pmfhl_lh_w2","pmfhl_lh_w3"},
+            {"pmfhl_sh_w0","pmfhl_sh_w1","pmfhl_sh_w2","pmfhl_sh_w3"}};
+        for(int w=0;w<4;++w)equal(got[w],want[w],fields[fmt][w],Count,20+int(fmt));
+        equal(c.pc,0x2220,"pmfhl_return_pc",Count,20+int(fmt));
+    }
+    for(const auto &pair:std::array<std::array<uint32_t,2>,3>{{{{0x89abcdef,0x12345678}},{{0xffffffff,0xffffffff}},{{48000,13400000}}}}) {
+        R5900Context c;c.pc=pmfhlProduct;
+        SET_GPR_U64((&c),4,pair[0]);SET_GPR_U64((&c),5,pair[1]);SET_GPR_U32((&c),31,0x2220);
+        runtime.lookupFunction(c.pc)(ram,&c,&runtime);
+        equal(GPR_U64((&c),2),uint64_t(pair[0])*pair[1],"pmfhl_unit1_product",Count,25);
     }
     runTlbNativeTests(runtime,checks,failures);
     std::printf("Native boundary effects: %d checks, %d failures\n",checks,failures);

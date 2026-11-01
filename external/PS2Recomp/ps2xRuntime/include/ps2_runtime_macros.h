@@ -906,65 +906,56 @@ inline __m128i _mm_custom_srav_epi32(__m128i a, __m128i count)
 }
 
 // PMFHL function implementations
-inline __m128i Ps2PmfhlLw(uint64_t hi, uint64_t lo)
+// PMFHL reads LO and HI as 128-bit registers: the low 64 bits of the result come from multiply unit 0 (lo/hi),
+// the high 64 bits from unit 1 (lo1/hi1, written by MULT1, MULTU1, DIV1, ...), each by the same rule (EE Core
+// Instruction Set Manual). CodeWarrior's 64-bit multiply reads its unit-1 product back this way (DBZIW issue 020).
+inline uint64_t Ps2PmfhlLwHalf(uint64_t hi, uint64_t lo)
 {
-    const uint64_t d0 = ((hi & 0xFFFFFFFFull) << 32) | (lo & 0xFFFFFFFFull);
-    return _mm_set_epi64x(0, static_cast<long long>(d0));
+    return ((hi & 0xFFFFFFFFull) << 32) | (lo & 0xFFFFFFFFull);
 }
 
-inline __m128i Ps2PmfhlUw(uint64_t hi, uint64_t lo)
+inline uint64_t Ps2PmfhlUwHalf(uint64_t hi, uint64_t lo)
 {
-    const uint64_t d0 = (((hi >> 32) & 0xFFFFFFFFull) << 32) | ((lo >> 32) & 0xFFFFFFFFull);
-    return _mm_set_epi64x(0, static_cast<long long>(d0));
+    return (((hi >> 32) & 0xFFFFFFFFull) << 32) | ((lo >> 32) & 0xFFFFFFFFull);
 }
 
-inline __m128i Ps2PmfhlSlw(uint64_t hi, uint64_t lo)
+inline uint64_t Ps2PmfhlSlwHalf(uint64_t hi, uint64_t lo)
 {
     const int64_t temp = static_cast<int64_t>(((hi & 0xFFFFFFFFull) << 32) | (lo & 0xFFFFFFFFull));
-    uint64_t d0;
     if (temp >= 0x000000007FFFFFFFLL)
-        d0 = 0x000000007FFFFFFFLL;
-    else if (temp <= -0x80000000LL)
-        d0 = 0xFFFFFFFF80000000ULL;
-    else
-        d0 = static_cast<uint64_t>(static_cast<int64_t>(static_cast<int32_t>(lo)));
-    return _mm_set_epi64x(0, static_cast<long long>(d0));
+        return 0x000000007FFFFFFFULL;
+    if (temp <= -0x80000000LL)
+        return 0xFFFFFFFF80000000ULL;
+    return static_cast<uint64_t>(static_cast<int64_t>(static_cast<int32_t>(lo)));
 }
 
-inline __m128i Ps2PmfhlLh(uint64_t hi, uint64_t lo)
+inline uint64_t Ps2PmfhlLhHalf(uint64_t hi, uint64_t lo)
 {
-    const uint16_t us[8] = {
-        static_cast<uint16_t>(lo & 0xFFFFu),
-        static_cast<uint16_t>((lo >> 32) & 0xFFFFu),
-        static_cast<uint16_t>(hi & 0xFFFFu),
-        static_cast<uint16_t>((hi >> 32) & 0xFFFFu),
-        0, 0, 0, 0
-    };
-    return _mm_loadu_si128(reinterpret_cast<const __m128i*>(us));
+    return (lo & 0xFFFFull) | (((lo >> 32) & 0xFFFFull) << 16) | ((hi & 0xFFFFull) << 32) |
+           (((hi >> 32) & 0xFFFFull) << 48);
 }
 
-inline __m128i Ps2PmfhlSh(uint64_t hi, uint64_t lo)
+inline uint64_t Ps2PmfhlShHalf(uint64_t hi, uint64_t lo)
 {
-    auto clamp = [](int32_t val) -> uint16_t {
+    auto clamp = [](int32_t val) -> uint64_t {
         if (val > 0x7FFF) return 0x7FFF;
         if (val < -0x8000) return 0x8000;
         return static_cast<uint16_t>(val);
     };
-    const uint16_t us[8] = {
-        clamp(static_cast<int32_t>(lo)),
-        clamp(static_cast<int32_t>(lo >> 32)),
-        clamp(static_cast<int32_t>(hi)),
-        clamp(static_cast<int32_t>(hi >> 32)),
-        0, 0, 0, 0
-    };
-    return _mm_loadu_si128(reinterpret_cast<const __m128i*>(us));
+    return clamp(static_cast<int32_t>(lo)) | (clamp(static_cast<int32_t>(lo >> 32)) << 16) |
+           (clamp(static_cast<int32_t>(hi)) << 32) | (clamp(static_cast<int32_t>(hi >> 32)) << 48);
 }
 
-#define PS2_PMFHL_LW(hi, lo) Ps2PmfhlLw((hi), (lo))
-#define PS2_PMFHL_UW(hi, lo) Ps2PmfhlUw((hi), (lo))
-#define PS2_PMFHL_SLW(hi, lo) Ps2PmfhlSlw((hi), (lo))
-#define PS2_PMFHL_LH(hi, lo) Ps2PmfhlLh((hi), (lo))
-#define PS2_PMFHL_SH(hi, lo) Ps2PmfhlSh((hi), (lo))
+inline __m128i Ps2PmfhlBothUnits(uint64_t unit0, uint64_t unit1)
+{
+    return _mm_set_epi64x(static_cast<long long>(unit1), static_cast<long long>(unit0));
+}
+
+#define PS2_PMFHL_LW(hi, lo, hi1, lo1) Ps2PmfhlBothUnits(Ps2PmfhlLwHalf((hi), (lo)), Ps2PmfhlLwHalf((hi1), (lo1)))
+#define PS2_PMFHL_UW(hi, lo, hi1, lo1) Ps2PmfhlBothUnits(Ps2PmfhlUwHalf((hi), (lo)), Ps2PmfhlUwHalf((hi1), (lo1)))
+#define PS2_PMFHL_SLW(hi, lo, hi1, lo1) Ps2PmfhlBothUnits(Ps2PmfhlSlwHalf((hi), (lo)), Ps2PmfhlSlwHalf((hi1), (lo1)))
+#define PS2_PMFHL_LH(hi, lo, hi1, lo1) Ps2PmfhlBothUnits(Ps2PmfhlLhHalf((hi), (lo)), Ps2PmfhlLhHalf((hi1), (lo1)))
+#define PS2_PMFHL_SH(hi, lo, hi1, lo1) Ps2PmfhlBothUnits(Ps2PmfhlShHalf((hi), (lo)), Ps2PmfhlShHalf((hi1), (lo1)))
 
 // FPU (COP1) operations
 #define FPU_SET_ACC(ctx, res) (ctx->f_acc = res)

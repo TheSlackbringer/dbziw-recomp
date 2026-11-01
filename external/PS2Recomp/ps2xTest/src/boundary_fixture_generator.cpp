@@ -83,6 +83,15 @@ int main(int argc,char**argv) {
         row("context_roundtrip",shared+0x3c0,shared+0x3d0);
         put(shared+0x3e0,{0x3c04c300,0x34841020,0x8c820000,0x24a50001,0x03e00008,0});
         row("tlb_constant_load",shared+0x3e0,shared+0x3f8);
+        // PMFHL reads both multiply units: MTLO a0; MTHI a1; MTLO1 a2; MTHI1 a3; PMFHL.fmt v0; JR ra; NOP.
+        for(uint32_t fmt=0;fmt<5;++fmt) {
+            const uint32_t at=pmfhlFixture(fmt);
+            put(at,{0x00800013,0x00a00011,0x70c00013,0x70e00011,0x70001030|(fmt<<6),0x03e00008,0});
+            row(pmfhlNames[fmt],at,at+28);
+        }
+        // A 64-bit product through unit 1: MULTU1 zero,a0,a1; PMFHL.LW at; PCPYUD v0,at,zero; JR ra; NOP.
+        put(pmfhlProduct,{0x70850019,0x70000830,0x702013a9,0x03e00008,0});
+        row("pmfhl_unit1_product",pmfhlProduct,pmfhlProduct+20);
         rows.close();
         std::ofstream raw(bin,std::ios::binary);
         for(uint32_t word:image)for(unsigned b=0;b<4;++b)raw.put(static_cast<char>(word>>(8*b)));

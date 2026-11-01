@@ -33,4 +33,8 @@ constexpr std::array<Words,Count> words{{
     {0x10200007,0x0000000d},{0x10200007,0xad040000},{0x10200007,0x0000000d},{0x50200007,0x0000000d}
 }};
 constexpr uint32_t address(Case c) { return base+static_cast<uint32_t>(c)*stride; }
+// PMFHL.LW/UW/SLW/LH/SH (fmt 0..4) after loading all four HI/LO halves; a unit-1 product read back by PMFHL.LW.
+constexpr const char *pmfhlNames[5]={"pmfhl_lw","pmfhl_uw","pmfhl_slw","pmfhl_lh","pmfhl_sh"};
+constexpr uint32_t pmfhlFixture(uint32_t fmt) { return shared+0x400+fmt*0x20; }
+constexpr uint32_t pmfhlProduct=shared+0x4a0;
 }
