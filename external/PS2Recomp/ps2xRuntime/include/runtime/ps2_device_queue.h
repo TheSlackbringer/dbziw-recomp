@@ -146,6 +146,12 @@ namespace ps2x::device
     // and never more than one per field (F3 overlay, issue 014).
     uint64_t gameFrameCount() noexcept;
 
+    // The same count without the async worker (DBZIW runs it off since its
+    // issue 009, so the drain above never counts there): sceGsSyncPath(0) calls
+    // this; a sync after DMA work since the previous one counts as a frame, at
+    // most one per field (DBZIW 013, the F3 overlay's FPS).
+    void noteSynchronousRenderSync(PS2Memory &mem) noexcept;
+
     // PS2X_DEVICE_PROFILE=1 (with PS2X_VU1_ASYNC_TRACE=1): device-worker time per
     // part, printed with each [vu1-async] line. Parts nest: Transfer contains
     // the VU1 runs it starts, a VU1 run contains its XGKICK GIF submits;

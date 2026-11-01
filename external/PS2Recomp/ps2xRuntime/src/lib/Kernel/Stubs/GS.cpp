@@ -1286,6 +1286,7 @@ namespace ps2_stubs
             }
             else
             {
+                ps2x::device::noteSynchronousRenderSync(mem); // the F3 overlay's game frames (DBZIW 013)
                 mem.processPendingTransfers();
             }
 

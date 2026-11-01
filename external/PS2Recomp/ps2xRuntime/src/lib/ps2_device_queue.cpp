@@ -1090,6 +1090,18 @@ namespace ps2x::device
         return g_gameFrames.load(std::memory_order_relaxed);
     }
 
+    void noteSynchronousRenderSync(PS2Memory &mem) noexcept
+    {
+        // "Had device work", as the async drain's target > applied: DMA started since the previous sync.
+        static std::atomic<uint64_t> s_lastDmaStarts{0};
+        const uint64_t starts = mem.dmaStartCount();
+        if (s_lastDmaStarts.exchange(starts, std::memory_order_relaxed) == starts)
+            return;
+        const uint64_t field = mem.gs().vsyncTick.load(std::memory_order_relaxed);
+        if (g_lastFrameField.exchange(field, std::memory_order_relaxed) != field)
+            g_gameFrames.fetch_add(1u, std::memory_order_relaxed);
+    }
+
     bool profileEnabled() noexcept
     {
         static const bool enabled = []
