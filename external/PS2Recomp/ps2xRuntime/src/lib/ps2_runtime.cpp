@@ -759,6 +759,23 @@ namespace ps2x_dev
             burstFrames = {};
         }
 
+        // DBZIW-DEBUG (020): with PS2X_AUDIO_SOURCE_DUMP, where the sound capture is every 25 ticks: frames submitted
+        // so far and frames the capture dropped (its file position is the difference). The sound runs on the IOP's
+        // host clock, so this ties ticks to the recording exactly instead of estimating its start from the run's end.
+        uint64_t lastAudioAnchor = std::numeric_limits<uint64_t>::max();
+
+        void stepAudioAnchor(uint64_t tick)
+        {
+            static const bool s_anchors = [] { const char *v = std::getenv("PS2X_AUDIO_SOURCE_DUMP"); return v && *v; }();
+            if (!s_anchors || !runtime || tick % 25u != 0u || tick == lastAudioAnchor)
+                return;
+            lastAudioAnchor = tick;
+            const auto stats = runtime->audioBackend().pcmStats();
+            std::fprintf(stderr, "[audio-anchor] tick=%llu submitted=%llu sourceDropped=%llu\n",
+                         static_cast<unsigned long long>(tick), static_cast<unsigned long long>(stats.submittedFrames),
+                         static_cast<unsigned long long>(stats.sourceCaptureDroppedFrames));
+        }
+
         void captureHostFrame()
         {
             if (hostShots.empty()) return;
@@ -900,6 +917,7 @@ namespace ps2x_dev
             pollCtrl(tick);
             stepInput(tick);
             stepBurst(tick);
+            stepAudioAnchor(tick);
 
             if (dumpEvery != 0u)
             {
