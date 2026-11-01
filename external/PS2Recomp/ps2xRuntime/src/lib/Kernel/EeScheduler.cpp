@@ -39,6 +39,17 @@ namespace
     constexpr uint32_t WEF_OR = 0x01u;
     constexpr uint32_t WEF_CLEAR = 0x10u;
     constexpr uint32_t WEF_CLEAR_ALL = 0x20u;
+    constexpr uint32_t kCop0StatusEie = 0x00010000u; // Status.EIE: cleared by DI, set by EI
+
+    bool interruptTraceEnabled()
+    {
+        static const bool enabled = [] {
+            const char *flag = std::getenv("PS2X_IRQ_TRACE");
+            return flag && flag[0] != '\0' && flag[0] != '0';
+        }();
+        return enabled;
+    }
+
     // Host and guest timing follow the game-selected CRT field rate.
     std::chrono::nanoseconds vblankPeriod(bool pal)
     {
@@ -179,6 +190,7 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
     m_rescheduleRequested = false;
     m_timeSliceExpired = false;
     m_insideInterrupt = false;
+    m_interruptsHeld = false;
     m_pendingEeTimerInterrupts = 0u;
     m_eeCycle = 0u;
     m_sliceEndCycle = kDefaultTimeSliceCycles;
@@ -340,7 +352,21 @@ void EeScheduler::run()
             continue;
         }
 
-        if (!m_pendingInvocations.empty() && running->invocations.empty())
+        // Pending invocations are interrupts (INTC/DMAC handlers, installed vectors, the VSync callback, alarms, SIF
+        // completions). As on the PS2 they wait while the running thread has interrupts disabled (DI clears
+        // Status.EIE): the game's critical sections rely on it, e.g. DBZIW's DMA queue FUN_0013b760 starts a transfer
+        // and records its owner between DI and EI, and a completion handled in between is lost (issue 020).
+        m_interruptsHeld = !m_pendingInvocations.empty() && running->invocations.empty() &&
+                           (context.cop0_status & kCop0StatusEie) == 0u;
+        if (m_interruptsHeld && interruptTraceEnabled())
+        {
+            static uint64_t held = 0u;
+            ++held;
+            if (held <= 8u || (held & (held - 1u)) == 0u) // DBZIW-DEBUG (PS2X_IRQ_TRACE)
+                std::cerr << "[ee-irq:held] thread=" << running->id << " pc=0x" << std::hex << context.pc << std::dec
+                          << " pending=" << m_pendingInvocations.size() << " count=" << held << std::endl;
+        }
+        if (!m_pendingInvocations.empty() && running->invocations.empty() && !m_interruptsHeld)
         {
             GuestInvocation invocation = std::move(m_pendingInvocations.front());
             m_pendingInvocations.pop_front();
@@ -513,6 +539,17 @@ bool EeScheduler::checkpointDue(uint32_t cycles) noexcept
         m_stopRequested.load(std::memory_order_acquire))
     {
         return true;
+    }
+
+    // An interrupt held while the thread had interrupts disabled is taken at the first safe point after EI.
+    if (m_interruptsHeld)
+    {
+        const GuestThread *running = currentThread();
+        if (running != nullptr && (running->activeContext().cop0_status & kCop0StatusEie) != 0u)
+        {
+            m_checkpointPending.store(true, std::memory_order_release);
+            return true;
+        }
     }
 
     const uint64_t nextEventCycle = m_nextDeadlineCycle.load(std::memory_order_acquire);
@@ -1428,10 +1465,7 @@ void EeScheduler::dispatchIrq(bool dmac, uint32_t cause)
 {
     assertExecutor();
     const uint32_t mask = dmac ? m_enabledDmacMask : m_enabledIntcMask;
-    static const bool traceIrq = [] {
-        const char *flag = std::getenv("PS2X_IRQ_TRACE");
-        return flag && flag[0] != '\0' && flag[0] != '0';
-    }();
+    const bool traceIrq = interruptTraceEnabled();
     static std::array<uint64_t, 64> traceCounts{};
     const uint64_t traceCount = traceIrq && cause < 32u ? ++traceCounts[(dmac ? 32u : 0u) + cause] : 0u;
     const bool traceSample = traceCount != 0u &&

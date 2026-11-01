@@ -72,6 +72,12 @@ namespace
     constexpr uint32_t kInvocationQueuePc = 0x00160530u;
     constexpr uint32_t kInvocationQueueResumePc = 0x00160540u;
     constexpr uint32_t kInvocationQueueHandlerPc = 0x00160550u;
+    constexpr uint32_t kDiRaisePc = 0x00160560u;
+    constexpr uint32_t kDiHandlerPc = 0x00160570u;
+    constexpr uint32_t kDiStillDisabledPc = 0x00160580u;
+    constexpr uint32_t kDiAfterEiPc = 0x00160590u;
+    bool g_diCheckpointWhileDisabled = true;
+    bool g_diCheckpointAfterEi = false;
 
 
     constexpr uint32_t kKernelVectorStartPc = 0x00160600u;
@@ -275,6 +281,40 @@ namespace
     {
         g_dispatchTrace.push_back(5);
         g_resumedResult = getRegS32(*ctx, 2);
+        ctx->pc = 0u;
+        runtime->requestStop();
+    }
+
+    // DI/EI (issue 020, DBZIW's DMA queue FUN_0013b760): a DMAC interrupt raised while the running thread has Status.EIE
+    // clear must wait for EI, as on the PS2, and a checkpoint taken meanwhile must not unwind the guest.
+    void schedulerDiRaise(uint8_t *, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        g_dispatchTrace.push_back(1);
+        EeScheduler &scheduler = runtime->eeScheduler();
+        scheduler.addIrqHandler(true, 9u, kDiHandlerPc, true, 0u, 0u, 0u);
+        ctx->cop0_status &= ~0x10000u; // DI
+        scheduler.dispatchIrq(true, 9u); // a toSPR transfer that completed inside its CHCR write
+        ctx->pc = kDiStillDisabledPc;
+    }
+
+    void schedulerDiHandler(uint8_t *, R5900Context *ctx, PS2Runtime *)
+    {
+        g_dispatchTrace.push_back(2);
+        ctx->pc = 0u;
+    }
+
+    void schedulerDiStillDisabled(uint8_t *, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        g_dispatchTrace.push_back(3);
+        g_diCheckpointWhileDisabled = runtime->eeCheckpointDue();
+        ctx->cop0_status |= 0x10000u; // EI
+        g_diCheckpointAfterEi = runtime->eeCheckpointDue();
+        ctx->pc = kDiAfterEiPc;
+    }
+
+    void schedulerDiAfterEi(uint8_t *, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        g_dispatchTrace.push_back(4);
         ctx->pc = 0u;
         runtime->requestStop();
     }
@@ -716,6 +756,30 @@ void register_ps2_runtime_interrupt_tests()
                 t.Equals(static_cast<uint32_t>(semaphore->waiters.size()), 0u,
                          "the awakened waiter must be removed from the semaphore queue");
             }
+        });
+
+        tc.Run("interrupts wait while the running thread has them disabled (DI) and run after EI", [](TestCase &t)
+        {
+            TestEnv env;
+            env.runtime.registerFunction(kDiRaisePc, schedulerDiRaise);
+            env.runtime.registerFunction(kDiHandlerPc, schedulerDiHandler);
+            env.runtime.registerFunction(kDiStillDisabledPc, schedulerDiStillDisabled);
+            env.runtime.registerFunction(kDiAfterEiPc, schedulerDiAfterEi);
+
+            g_dispatchTrace.clear();
+            g_diCheckpointWhileDisabled = true;
+            g_diCheckpointAfterEi = false;
+            R5900Context mainContext{};
+            mainContext.pc = kDiRaisePc;
+            env.runtime.eeScheduler().reset(env.rdram.data(), mainContext);
+            env.runtime.eeScheduler().run();
+
+            const std::vector<int> expected{1, 3, 2, 4};
+            t.IsTrue(g_dispatchTrace == expected,
+                     "a DMAC interrupt raised with EIE clear must run after EI, not inside the disabled section");
+            t.IsFalse(g_diCheckpointWhileDisabled,
+                      "a held interrupt must not make checkpoints unwind the guest while interrupts are disabled");
+            t.IsTrue(g_diCheckpointAfterEi, "EI must let the next checkpoint deliver the held interrupt");
         });
 
         tc.Run("event-flag completion writes observed bits before strict-priority resume", [](TestCase &t)

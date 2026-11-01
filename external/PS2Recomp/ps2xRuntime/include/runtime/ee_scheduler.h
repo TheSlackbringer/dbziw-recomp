@@ -452,6 +452,8 @@ private:
     bool m_rescheduleRequested = false;
     bool m_timeSliceExpired = false;
     bool m_insideInterrupt = false;
+    // A queued interrupt waits because the running thread has Status.EIE clear (DI); EI lets the next checkpoint take it.
+    bool m_interruptsHeld = false;
     uint32_t m_pendingEeTimerInterrupts = 0;
     uint64_t m_eeCycle = 0;
     uint64_t m_sliceEndCycle = kDefaultTimeSliceCycles;
