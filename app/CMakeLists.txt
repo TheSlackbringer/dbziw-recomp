@@ -114,6 +114,15 @@ add_test(NAME field_history COMMAND dbziw_field_history_test)
 
 dbziw_runtime_test(vu1_async_queue)
 set_tests_properties(vu1_async_queue PROPERTIES TIMEOUT 20)
+# DW5 ran these two from its lifted-code test; here a synthetic microprogram stands alone, one process per path.
+add_executable(dbziw_vu1_dma_reset_test tests/vu1_dma_reset_test.cpp)
+target_link_libraries(dbziw_vu1_dma_reset_test PRIVATE ps2_runtime)
+target_include_directories(dbziw_vu1_dma_reset_test PRIVATE "${PS2RECOMP_DIR}/ps2xRuntime/src/lib" "${PS2RECOMP_DIR}/ps2xRuntime/include")
+target_compile_options(dbziw_vu1_dma_reset_test PRIVATE ${DBZIW_ARCH_FLAGS} ${DBZIW_STRICT_FP_FLAGS})
+set_target_properties(dbziw_vu1_dma_reset_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
+add_test(NAME vu1_dma_reset_interpreter COMMAND dbziw_vu1_dma_reset_test interpreter)
+add_test(NAME vu1_dma_reset_lift COMMAND dbziw_vu1_dma_reset_test lift)
+set_tests_properties(vu1_dma_reset_interpreter vu1_dma_reset_lift PROPERTIES TIMEOUT 20)
 # ThreadSanitizer variant: the queue, PS2Memory, VIF1 parser and GIF arbiter are recompiled instrumented; their
 # archive copies are then never pulled in.
 option(DBZIW_TSAN_TESTS "Build the ThreadSanitizer variant of the VU1 async queue test" ON)
