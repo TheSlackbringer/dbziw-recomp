@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Reads repository-relative paths, one per line, and prints those that .githooks/game-derived blocks (a pattern
+# matches and no exception line does). Prints nothing when every path is allowed. Used by pre-commit and pre-push;
+# CI can pipe `git ls-files` through it (issue 007). Matching stays inside bash: every extra process costs about
+# 0.1 s in Git Bash on Windows, on every commit.
+list="$(dirname "$0")/game-derived"
+if [ ! -r "$list" ]; then
+    echo "blocked-paths: $list is missing" >&2
+    exit 2
+fi
+block=() allow=()
+while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%$'\r'}  # a Windows checkout may give the list CRLF line ends
+    [[ $line =~ ^[[:space:]]*(#|$) ]] && continue
+    if [[ $line == '!'* ]]; then allow+=("${line:1}"); else block+=("$line"); fi
+done < "$list"
+shopt -s nocasematch
+while IFS= read -r path || [ -n "$path" ]; do
+    path=${path%$'\r'}
+    [ -n "$path" ] || continue
+    hit=
+    for re in "${block[@]}"; do
+        if [[ $path =~ $re ]]; then hit=1; break; fi
+    done
+    [ -n "$hit" ] || continue
+    for re in "${allow[@]}"; do
+        if [[ $path =~ $re ]]; then hit=; break; fi
+    done
+    [ -n "$hit" ] && printf '%s\n' "$path"
+done
+exit 0

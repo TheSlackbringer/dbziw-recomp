@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Blocks committing game-derived or local-only files (the list in .githooks/game-derived), then checks that the
+# renderer patches still apply in order on the pinned paraLLEl-GS revision. Adapted from DW5's hooks (issue 017).
+hooks=$(cd "$(dirname "$0")" && pwd)
+staged=$(git -c core.quotepath=off diff --cached --name-only --diff-filter=ACMR)
+bad=$(printf '%s\n' "$staged" | "$hooks/blocked-paths") || { echo "Commit blocked: cannot read the blocked-path list." >&2; exit 1; }
+if [ -n "$bad" ]; then
+    echo "Commit blocked: game-derived or local-only files must never be committed (.githooks/game-derived):" >&2
+    echo "$bad" >&2
+    exit 1
+fi
+
+# The renderer patches must apply in order on the pinned paraLLEl-GS revision (README.md), exactly as a fresh
+# checkout applies them: git apply vendor/parallel-gs-patches/*.patch. Checked when a patch is staged or the
+# pinned revision changes.
+pgs_repo=app/deps/parallel-gs
+pin() { sed -n 's#^git -C app/deps/parallel-gs checkout \([0-9a-f]\{40\}\)\r\{0,1\}$#\1#p' | head -1; }
+nl=$'\n'
+patches_staged=; pin_changed=
+[[ "$nl$staged" == *"${nl}vendor/parallel-gs-patches/"* ]] && patches_staged=1
+if [[ "$nl$staged$nl" == *"${nl}README.md$nl"* ]]; then
+    [ "$(git show :README.md 2>/dev/null | pin)" != "$(git show HEAD:README.md 2>/dev/null | pin)" ] && pin_changed=1
+fi
+if [ -n "$patches_staged" ] || [ -n "$pin_changed" ]; then
+    pgs_rev=$(git show :README.md 2>/dev/null | pin)
+    if [ -z "$pgs_rev" ]; then
+        echo "Commit blocked: README.md has no 'git -C app/deps/parallel-gs checkout <revision>' line." >&2
+        exit 1
+    fi
+    if ! git -C "$pgs_repo" cat-file -e "$pgs_rev^{commit}" 2>/dev/null; then
+        echo "Commit blocked: cannot check vendor/parallel-gs-patches ($pgs_repo at $pgs_rev is missing)." >&2
+        exit 1
+    fi
+    tmp=$(mktemp -d)
+    trap 'rm -rf -- "$tmp"' EXIT
+    git -C "$pgs_repo" archive "$pgs_rev" | tar -x -C "$tmp"
+    # The staged version of every patch in the series, in file name order.
+    for path in $(git ls-files --cached 'vendor/parallel-gs-patches/*.patch' | sort); do
+        if ! git show ":$path" | (cd "$tmp" && git apply --whitespace=nowarn -); then
+            echo "Commit blocked: $path does not apply after the patches before it (on $pgs_rev)." >&2
+            echo "Export each patch against the previous patches, not against upstream." >&2
+            exit 1
+        fi
+    done
+fi
+exit 0

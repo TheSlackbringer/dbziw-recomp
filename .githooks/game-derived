@@ -1,0 +1,37 @@
+# Paths that must never be committed or pushed: files derived from the game and local-only files (AGENTS.md,
+# "Nothing derived from the game in Git"; issue 017). One extended regular expression per line, matched without
+# regard to case against the repository-relative path. A line starting with ! is an exception to the lines above
+# it (add one only with the maintainer's approval). Read by .githooks/blocked-paths, which the pre-commit and
+# pre-push hooks use; CI uses the same list (issue 007).
+
+# The player's disc and the files extracted from it, disc images, memory cards and save states
+^game/
+^discs/
+^(MODULES|USR)/
+(^|/)(SYSTEM\.CNF|CACHE\.LST|DUMMY\.DAT)$
+(^|/)(SLES|SLUS|SLPS|SLPM|SCES|SCUS|SCPS)_[0-9]{3}\.[0-9]{2}$
+\.(iso|img|irx|elf|afs|sfd|pss|adx|bin)$
+(^|/)mc[01]/
+\.(state|ps2|p2s)$
+
+# Ghidra databases
+^ghidra(_iop)?/
+\.(gpr|rep)(/|$)
+
+# C++ generated or lifted from the game's code and microcode
+^recomp/(.*/)?output/
+^recomp/(.*/)?vu[01]/
+vu[01]_lifted\.cpp$
+
+# The local notes (their own repository): evidence, test output, logs
+^notes/
+
+# Frame dumps, screenshots, renderer and memory captures, sound dumps. GS recordings (PS2X_GS_RECORD, *.rec in
+# tools/gsreplay), VIF1 captures (*.v1cap), VU1 code and data from PS2X_XGKICK_CAPTURE / PS2X_VU1_RUN_CAPTURE.
+\.(png|jpe?g|bmp|tga|gif|webp)$
+\.(wav|raw|gsrec|rec|v1cap|vram|code|data)$
+(^|/)(frames?|snaps|shots|evidence)/
+
+# Builds: the compiled game is game-derived
+^app/build[^/]*/
+\.(exe|dll|pdb)$
