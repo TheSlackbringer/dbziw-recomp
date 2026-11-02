@@ -1529,7 +1529,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                 uint32_t chcr = value;
                 uint32_t mode = (chcr >> 2) & 0x3;
 
-                // DW5XL (owner-approved 2026-10-14): VIF1 CHCR.DIR=0 is a GS -> memory
+                // DBZIW (owner-approved 2026-10-14): VIF1 CHCR.DIR=0 is a GS -> memory
                 // readback (sceGsExecStoreImage after TRXDIR=1, VIF1_STAT.FDR, BUSDIR=1).
                 // Never feed the destination buffer to the VIF1 parser. Copy the GS
                 // local->host output into MADR; complete when QWC is satisfied, else
@@ -1807,7 +1807,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                         static unsigned printed = 0;
                         if (printed++ < 4)
                         {
-                            std::fprintf(stderr, "[dw5xl:vif1chain] bytes=%zu tags=%llu chcr=0x%x start:", chainBuf.size(),
+                            std::fprintf(stderr, "[dbziw:vif1chain] bytes=%zu tags=%llu chcr=0x%x start:", chainBuf.size(),
                                          static_cast<unsigned long long>(tagsProcessed), chcr);
                             for (const auto &t : dw5Tags)
                                 std::fprintf(stderr, " [@%x id%u q%u a%x vif=%08x,%08x]", t.at, t.id, t.qwc, t.addr, static_cast<uint32_t>(t.upper), static_cast<uint32_t>(t.upper >> 32));

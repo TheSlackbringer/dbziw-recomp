@@ -615,7 +615,7 @@ namespace ps2_syscalls
                         if (!byte) break;
                         preview[count] = *byte;
                     }
-                std::fprintf(stderr, "[dw5xl:sfx-rpc] tick=%llu sid=%08x rpc=%x client=%08x send=%08x size=%u preview=%u pc=%08x ra=%08x words=",
+                std::fprintf(stderr, "[dbziw:sfx-rpc] tick=%llu sid=%08x rpc=%x client=%08x send=%08x size=%u preview=%u pc=%08x ra=%08x words=",
                              static_cast<unsigned long long>(runtime->eeScheduler().currentVSyncTick()),
                              sid, rpcNum, clientPtr, sendBuf, sendSize, count,
                              ctx->pc, getRegU32(ctx, 31));
@@ -633,7 +633,7 @@ namespace ps2_syscalls
                 uint32_t r[6] = {};
                 if (receiveBuffer && receiveSize >= 24u)
                     std::memcpy(r, getMemPtr(rdram, receiveBuffer), sizeof(r));
-                std::fprintf(stderr, "[dw5xl:ksnh] rpc=0x%x req=%x %x %x %x reply=%x %x %x %x %x %x\n", rpcNum,
+                std::fprintf(stderr, "[dbziw:ksnh] rpc=0x%x req=%x %x %x %x reply=%x %x %x %x %x %x\n", rpcNum,
                              dw5Pre[0], dw5Pre[1], dw5Pre[2], dw5Pre[3], r[0], r[1], r[2], r[3], r[4], r[5]);
             }
             // DBZIW-DEBUG (temporary): log each (sid, rpc) once, then whenever its reply word 0 changes.
@@ -655,7 +655,7 @@ namespace ps2_syscalls
                 if (inserted || it->second.first != reply0 || ((sid == 0x4B534E47u || sid == 0x4B534E48u) && std::getenv("PS2X_KSNG_TRACE")))
                 {
                     it->second.first = reply0;
-                    std::cerr << "[dw5xl:rpc] sid=0x" << std::hex << sid << " rpc=0x" << rpcNum << " #" << std::dec
+                    std::cerr << "[dbziw:rpc] sid=0x" << std::hex << sid << " rpc=0x" << rpcNum << " #" << std::dec
                               << it->second.second << " send=" << sendSize << " [" << std::hex << send0 << " " << send1
                               << " " << send2 << "] reply0=0x" << reply0 << " handled=" << iopResult.handled
                               << " endFn=0x" << endFunction << std::dec << std::endl;
@@ -946,7 +946,7 @@ namespace ps2_syscalls
         // DBZIW-DEBUG (temporary)
         static int dbgStat = 0;
         if (it->second.busy && dbgStat++ < 5)
-            std::cerr << "[dw5xl:rpc] checkstat client=0x" << std::hex << clientPtr << " sid=0x" << it->second.sid
+            std::cerr << "[dbziw:rpc] checkstat client=0x" << std::hex << clientPtr << " sid=0x" << it->second.sid
                       << " busy" << std::dec << std::endl;
     }
 

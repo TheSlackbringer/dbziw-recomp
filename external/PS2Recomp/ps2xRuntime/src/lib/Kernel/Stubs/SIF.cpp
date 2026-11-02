@@ -735,7 +735,7 @@ namespace ps2_stubs
                     nonzero += p[off] != 0u;
                 for (uint32_t off = 0; off + 16u <= size; off += 16u)
                     badHeader += (p[off] >> 4) > 4u || (p[off] & 15u) > 12u;
-                std::fprintf(stderr, "[dw5xl:sifaudio] src=0x%x size=0x%x nonzero=%u badHdr=%u/%u first=", src, size, nonzero, badHeader, size / 16u);
+                std::fprintf(stderr, "[dbziw:sifaudio] src=0x%x size=0x%x nonzero=%u badHdr=%u/%u first=", src, size, nonzero, badHeader, size / 16u);
                 for (uint32_t i = 0; i < 32u; ++i)
                     std::fprintf(stderr, "%02x", p[i]);
                 std::fprintf(stderr, "\n");

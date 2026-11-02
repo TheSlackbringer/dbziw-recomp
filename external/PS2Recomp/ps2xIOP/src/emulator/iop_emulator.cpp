@@ -44,7 +44,7 @@ namespace ps2x::iop::detail
         constexpr uint32_t kCallStackCapacity = (kCallStackLimit - kCallStackBase) / kCallStackSize;
         constexpr uint64_t kCdvdCompletionCycles = 128u;
         constexpr uint64_t kIopClockHz = 36'864'000u;
-        // DW5XL: generated EE code accounts 32 cycles per checkpoint. Reading the host clock and
+        // DBZIW: generated EE code accounts 32 cycles per checkpoint. Reading the host clock and
         // running an IOP scheduler pass at each one cost more than the IOP work itself, so the
         // host-clocked IOP catches up once per this many EE cycles (~14 us of PS2 time).
         constexpr uint64_t kHostClockPollEeCycles = 4096u;
@@ -221,7 +221,7 @@ namespace ps2x::iop::detail
             {
                 pendingDmaInterrupts[dma->irq] = totalCycles + dma->delayCycles;
                 if (std::getenv("PS2X_LIBSD_TRACE")) // DBZIW-DEBUG
-                    std::fprintf(stderr, "[dw5xl:iopdma] start irq=0x%x at=%llu due=%llu\n", dma->irq,
+                    std::fprintf(stderr, "[dbziw:iopdma] start irq=0x%x at=%llu due=%llu\n", dma->irq,
                                  (unsigned long long)totalCycles, (unsigned long long)(totalCycles + dma->delayCycles));
             }
         }
@@ -321,17 +321,17 @@ namespace ps2x::iop::detail
                 static unsigned traced = 0;
                 const uint32_t ord = call.ordinal;
                 if ((ord >= 4u && ord <= 30u) && traced++ < 500) // DBZIW-DEBUG (issue 020): every libsd call
-                    std::fprintf(stderr, "[dw5xl:libsd] #%u a0=0x%x a1=0x%x a2=0x%x\n", ord, a0, cpu.gpr[5], cpu.gpr[6]);
+                    std::fprintf(stderr, "[dbziw:libsd] #%u a0=0x%x a1=0x%x a2=0x%x\n", ord, a0, cpu.gpr[5], cpu.gpr[6]);
                 if (ord == 15u || ord == 16u)
                     for (uint32_t k = 0x40u; k >= 4u; k -= 4u)
-                        std::fprintf(stderr, "[dw5xl:libsd]   %08x: %08x\n", cpu.gpr[31] - k, memory.read32(cpu.gpr[31] - k));
+                        std::fprintf(stderr, "[dbziw:libsd]   %08x: %08x\n", cpu.gpr[31] - k, memory.read32(cpu.gpr[31] - k));
                 if (ord == 15u || ord == 16u)
                     for (uint32_t i = 0; i < 16u; ++i)
-                        std::fprintf(stderr, "[dw5xl:libsd]   batch[%u] func=%u entry=0x%04x value=0x%08x\n", i,
+                        std::fprintf(stderr, "[dbziw:libsd]   batch[%u] func=%u entry=0x%04x value=0x%08x\n", i,
                                      memory.read16(a0 + i * 8u), memory.read16(a0 + i * 8u + 2u), memory.read32(a0 + i * 8u + 4u));
             }
             // DBZIW-HACK (temporary): libsd #23 sceSdSetEffectAttr never succeeds against the partial
-            // SPU2 emulation (returns -210 forever) and DW5/DW5XL loop on it at boot. Report success
+            // SPU2 emulation (returns -210 forever) and DW5 loops on it at boot. Report success
             // (no reverb) until SPU2 effect-area handling is emulated.
             if (iequals(call.library, "libsd") && call.ordinal == 23u)
             {
@@ -340,7 +340,7 @@ namespace ps2x::iop::detail
                 {
                     const uint32_t core = a0 & 1u;
                     std::fprintf(stderr,
-                                 "[dw5xl:iop] bypassing libsd sceSdSetEffectAttr(core=%u) ATTR=0x%04x CHCR=0x%08x ADMA=0x%04x\n",
+                                 "[dbziw:iop] bypassing libsd sceSdSetEffectAttr(core=%u) ATTR=0x%04x CHCR=0x%08x ADMA=0x%04x\n",
                                  a0, memory.read16(0x1F90019Au + core * 0x400u),
                                  memory.read32(core ? 0x1F801508u : 0x1F8010C8u),
                                  memory.read16(0x1F9001B0u + core * 0x400u));
@@ -661,13 +661,13 @@ namespace ps2x::iop::detail
                     if (!memory.soundDmaActive(irq))
                     {
                         if (std::getenv("PS2X_LIBSD_TRACE")) // DBZIW-DEBUG
-                            std::fprintf(stderr, "[dw5xl:iopdma] skip inactive irq=0x%x\n", irq);
+                            std::fprintf(stderr, "[dbziw:iopdma] skip inactive irq=0x%x\n", irq);
                         continue;
                     }
                     memory.completeSoundDma(irq);
                     const auto dispatched = intrman.dispatchInterrupt(irq, *this);
                     if (std::getenv("PS2X_LIBSD_TRACE")) // DBZIW-DEBUG
-                        std::fprintf(stderr, "[dw5xl:iopdma] complete irq=0x%x at=%llu dispatched=%d\n", irq,
+                        std::fprintf(stderr, "[dbziw:iopdma] complete irq=0x%x at=%llu dispatched=%d\n", irq,
                                      (unsigned long long)totalCycles, static_cast<int>(dispatched));
                 }
             }
@@ -869,8 +869,8 @@ namespace ps2x::iop::detail
             ModuleLoadResult result{true, -1, -1};
             const IopImageLoadResult loaded = IopModuleLoader::load(image, memory, moduleCursor);
             moduleCursor = loaded.nextModuleCursor;
-            if (moduleCursor > IopMemory::HeapBase) // DW5XL: modules must stay below the sysmem heap
-                std::fprintf(stderr, "[dw5xl:iop] WARNING module cursor 0x%x overlaps heap base 0x%x\n",
+            if (moduleCursor > IopMemory::HeapBase) // DBZIW: modules must stay below the sysmem heap
+                std::fprintf(stderr, "[dbziw:iop] WARNING module cursor 0x%x overlaps heap base 0x%x\n",
                              moduleCursor, IopMemory::HeapBase);
             if (!loaded)
             {

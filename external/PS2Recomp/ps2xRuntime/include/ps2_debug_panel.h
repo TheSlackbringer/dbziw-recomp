@@ -18,7 +18,7 @@ public:
 
     // F1 debugger available (a game's player build turns it off).
     void setDebuggerEnabled(bool enabled) { m_debuggerEnabled = enabled; }
-    // A game overlay drawn in the same imgui frame as the debugger (e.g. DW5XL's disc prompt): `wanted` is asked
+    // A game overlay drawn in the same imgui frame as the debugger (e.g. DW5's disc prompt): `wanted` is asked
     // every frame, `draw` then draws its own imgui windows.
     void setOverlay(std::function<bool()> wanted, std::function<void()> draw)
     {

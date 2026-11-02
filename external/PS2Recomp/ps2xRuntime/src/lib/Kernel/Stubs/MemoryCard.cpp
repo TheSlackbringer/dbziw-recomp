@@ -827,7 +827,7 @@ namespace ps2_stubs
                         {
                             // Negative maxent = count only: libmc skips the table SyncDCache and games
                             // pass table=NULL, using the result as "number of matching entries"
-                            // (e.g. DW5XL: sceMcGetDir(0,0,"/BASLUS-21299/*",0,-1,NULL) = save exists?).
+                            // (e.g. DW5: sceMcGetDir(0,0,"/BASLUS-21299/*",0,-1,NULL) = save exists?).
                             result = static_cast<int32_t>(entries.size());
                         }
                         else if (entryCount == 0u || tableAddr == 0u)

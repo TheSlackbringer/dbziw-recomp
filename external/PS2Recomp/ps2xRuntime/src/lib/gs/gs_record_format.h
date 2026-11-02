@@ -3,7 +3,7 @@
 
 // Canonical on-disk format of PS2X_GS_RECORD backend recordings (version 2).
 // DBZIW-TEST: shared by the runtime recorder (gs_record.cpp) and the offline
-// tools (tools/gsreplay: dw5xl_gsrec diff/dump, dw5xl_vif1_replay).
+// tools (tools/gsreplay: dbziw_gsrec diff/dump, dbziw_vif1_replay).
 //
 // File:    "PS2XGSR2" | u32 version | u32 flags(0)
 // Record:  u8 op | u32 payloadBytes | payload

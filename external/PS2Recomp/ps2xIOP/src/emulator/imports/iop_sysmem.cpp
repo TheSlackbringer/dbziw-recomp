@@ -33,14 +33,14 @@ namespace ps2x::iop::detail
                                          : m_memory.allocate(a1, 16u);
             setV0(address);
             if (a1 >= 0x10000u) // DBZIW-DEBUG (temporary)
-                std::fprintf(stderr, "[dw5xl:iopmem] AllocSysMemory(type=%u, size=0x%x) -> 0x%x ra=0x%x\n",
+                std::fprintf(stderr, "[dbziw:iopmem] AllocSysMemory(type=%u, size=0x%x) -> 0x%x ra=0x%x\n",
                              a0, a1, address, cpu.gpr[31]);
             return true;
         }
         case 5: // FreeSysMemory
         {
             const bool freed = m_memory.freeAllocation(a0);
-            std::fprintf(stderr, "[dw5xl:iopmem] FreeSysMemory(0x%x) -> %s ra=0x%x\n", a0, freed ? "ok" : "FAILED",
+            std::fprintf(stderr, "[dbziw:iopmem] FreeSysMemory(0x%x) -> %s ra=0x%x\n", a0, freed ? "ok" : "FAILED",
                          cpu.gpr[31]); // DBZIW-DEBUG (temporary)
             setV0(freed ? 0u : 0xFFFFFFFFu);
             return true;

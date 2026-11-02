@@ -1,5 +1,5 @@
 #include <atomic>
-std::atomic<uint32_t> g_dw5xlMpegDemux{0}, g_dw5xlMpegGetPic{0}, g_dw5xlMpegPictures{0}, g_dw5xlStrEvents[8]{}; // DBZIW-DEBUG
+std::atomic<uint32_t> g_dbziwMpegDemux{0}, g_dbziwMpegGetPic{0}, g_dbziwMpegPictures{0}, g_dbziwStrEvents[8]{}; // DBZIW-DEBUG
 namespace { std::atomic<uint64_t> g_moviePictures{0}; } // decoded pictures handed to the game (F3 FPS)
 #include "Common.h"
 #include "MPEG.h"
@@ -218,7 +218,7 @@ namespace ps2_stubs
         constexpr uint32_t kStubMovieHeight = 240u;
         constexpr uint32_t kMpegStrM2V = 0u;
         // sceMpegStrType: M2V=0, IPU=1, PCM=2, ADPCM=3, DATA=4. These were 1/2, so a game registering
-        // its audio callback as ADPCM (DW5XL: type 3) never received any audio.
+        // its audio callback as ADPCM (DW5: type 3) never received any audio.
         constexpr uint32_t kMpegStrPCM = 2u;
         constexpr uint32_t kMpegStrADPCM = 3u;
         constexpr uint8_t kMpegPackHeader = 0xBAu;
@@ -898,7 +898,7 @@ namespace ps2_stubs
             event.pts = pts90k >= 0 ? static_cast<uint64_t>(pts90k) : 0xFFFFFFFFFFFFFFFFull;
             event.dts = dts90k >= 0 ? static_cast<uint64_t>(dts90k) : 0xFFFFFFFFFFFFFFFFull;
             event.callbacks = matchingStreamCallbacks(mpegAddr, streamType);
-            g_dw5xlStrEvents[streamType & 7u].fetch_add(1u, std::memory_order_relaxed); // DBZIW-DEBUG
+            g_dbziwStrEvents[streamType & 7u].fetch_add(1u, std::memory_order_relaxed); // DBZIW-DEBUG
             if (!event.callbacks.empty())
             {
                 callbackEvents.push_back(std::move(event));
@@ -996,7 +996,7 @@ namespace ps2_stubs
 
 
         // Callback data normally comes from the guest heap, but games whose SetupHeap/malloc take all
-        // memory (DW5XL) leave nothing for the runtime and every movie callback was dropped. Fall back
+        // memory (DW5) leave nothing for the runtime and every movie callback was dropped. Fall back
         // to a ring of slots reserved once in kernel RAM; slots are reused only after 256 more callbacks.
         constexpr uint32_t kMpegCallbackScratchSlots = 256u;
         uint32_t g_mpegCallbackScratchBase = 0u;
@@ -1308,7 +1308,7 @@ namespace ps2_stubs
                         if (rejected) ++rejectedCount; else { accepted += ev.len; ++packets; }
                         if (tick >= lastTick + 60u)
                         {
-                            std::fprintf(stderr, "[dw5xl:mpegaudio] tick=%llu acceptedBytes=%llu packets=%llu rejects=%llu lastLen=%u\n",
+                            std::fprintf(stderr, "[dbziw:mpegaudio] tick=%llu acceptedBytes=%llu packets=%llu rejects=%llu lastLen=%u\n",
                                          (unsigned long long)tick, (unsigned long long)accepted, (unsigned long long)packets,
                                          (unsigned long long)rejectedCount, ev.len);
                             lastTick = tick;
@@ -1579,7 +1579,7 @@ namespace ps2_stubs
                         {
                             // PSS private stream 1 carries a 4-byte prefix whose second byte is the
                             // sub-stream id: 0xA0-0xAF are audio (SShd/SSbd ADPCM or PCM). Other ids
-                            // (e.g. DW5XL's 0x90 data track) must not reach audio callbacks.
+                            // (e.g. DW5's 0x90 data track) must not reach audio callbacks.
                             if (std::getenv("PS2X_MPEGAUDIO_TRACE")) // DBZIW-DEBUG: audio sub-stream bytes
                             {
                                 static unsigned logged = 0;
@@ -1587,13 +1587,13 @@ namespace ps2_stubs
                                 const uint32_t prefix = (input[payload] << 8) | input[payload + 1];
                                 if (end - payload > 48 && input[payload + 4] == 'S' && input[payload + 5] == 'S' && input[payload + 6] == 'h')
                                 {
-                                    std::fprintf(stderr, "[dw5xl:sshd] sub=0x%02x:", input[payload + 1]);
+                                    std::fprintf(stderr, "[dbziw:sshd] sub=0x%02x:", input[payload + 1]);
                                     for (size_t k = 4; k < 44; ++k)
                                         std::fprintf(stderr, " %02x", input[payload + k]);
                                     std::fprintf(stderr, "\n");
                                 }
                                 if (false && (prefix != lastPrefix || logged++ < 4))
-                                    lastPrefix = prefix, std::fprintf(stderr, "[dw5xl:audiopkt] stream=0x%02x len=%zu first=%02x %02x %02x %02x %02x %02x %02x %02x\n",
+                                    lastPrefix = prefix, std::fprintf(stderr, "[dbziw:audiopkt] stream=0x%02x len=%zu first=%02x %02x %02x %02x %02x %02x %02x %02x\n",
                                                  stream, end - payload, input[payload], input[payload + 1], input[payload + 2], input[payload + 3],
                                                  input[payload + 4], input[payload + 5], input[payload + 6], input[payload + 7]);
                             }
@@ -2203,7 +2203,7 @@ namespace ps2_stubs
 
     void sceMpegDemuxPssRing(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        g_dw5xlMpegDemux.fetch_add(1u, std::memory_order_relaxed); // DBZIW-DEBUG
+        g_dbziwMpegDemux.fetch_add(1u, std::memory_order_relaxed); // DBZIW-DEBUG
         demuxGuestInput(rdram, ctx, runtime, getRegU32(ctx, 7), readAbiArg4(rdram, ctx));
     }
 
@@ -2287,7 +2287,7 @@ namespace ps2_stubs
 
         void getPicture(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, bool serviceInput)
         {
-            g_dw5xlMpegGetPic.fetch_add(1u, std::memory_order_relaxed); // DBZIW-DEBUG
+            g_dbziwMpegGetPic.fetch_add(1u, std::memory_order_relaxed); // DBZIW-DEBUG
             const uint32_t mpegAddr = getRegU32(ctx, 4);
             const uint32_t imageAddr = getRegU32(ctx, 5);
             uint32_t width = kStubMovieWidth;

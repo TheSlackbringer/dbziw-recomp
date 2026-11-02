@@ -25,7 +25,7 @@ namespace ps2x::iop::detail
         m_servers.clear();
         m_nextDmaId = 1u;
         // SIFMAN is initialised by the IOP kernel at boot, before any game IRX starts, so
-        // sceSifCheckInit must report true (KOEISND.IRX in DW5/DW5XL bails out otherwise).
+        // sceSifCheckInit must report true (KOEISND.IRX in DW5 bails out otherwise).
         m_sifInitialized = true;
     }
 

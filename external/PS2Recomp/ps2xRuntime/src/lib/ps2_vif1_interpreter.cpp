@@ -494,7 +494,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
             const uint32_t mpgBytes = instructionCount * 8u;
             if (std::getenv("PS2X_MPG_TRACE")) // DBZIW-DEBUG
             {
-                std::fprintf(stderr, "[dw5xl:mpg] dest=0x%04x bytes=%u available=%u%s", destAddr, mpgBytes,
+                std::fprintf(stderr, "[dbziw:mpg] dest=0x%04x bytes=%u available=%u%s", destAddr, mpgBytes,
                              pos <= sizeBytes ? sizeBytes - pos : 0u, pos + mpgBytes > sizeBytes ? " TRUNCATED" : "");
                 unsigned nops = 0;
                 for (uint32_t k = 0; k + 8 <= mpgBytes && pos + k + 8 <= sizeBytes; k += 8)
@@ -555,7 +555,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
 
             // A DIRECT only carries its own payload. A GIF IMAGE tag that announces more data than
             // this DIRECT holds is continued by the GIF's PATH2 state when the next DIRECT arrives;
-            // the VIF must keep parsing VIFcodes after this payload (DW5XL sends per-macroblock
+            // the VIF must keep parsing VIFcodes after this payload (DW5 sends per-macroblock
             // "DIRECTHL 6 (BITBLT + IMAGE tag)" then "DIRECTHL 64 (pixels)" through TTE tags).
             if (parseTrace)
                 std::fprintf(stderr, "[vif:direct] tick=%llu cmd=%08x pos=%u bytes=%u requested=%u available=%u truncated=%d\n", static_cast<unsigned long long>(parseTick), cmd, pos, sizeBytes, requestedQw, availableQw, truncated);

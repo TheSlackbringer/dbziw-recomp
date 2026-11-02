@@ -2388,7 +2388,7 @@ PresentationFrame GSCpuBackend::Present(const GSPresentationRequest &request)
 PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationRequest &request, ReusableFieldWeaver *fieldHistory)
 {
     PresentationFrame result{};
-    if (m_vram && std::getenv("PS2X_ZWATCH")) // DBZIW-DEBUG: watch the first word of GS page 168 (DW5XL title depth)
+    if (m_vram && std::getenv("PS2X_ZWATCH")) // DBZIW-DEBUG: watch the first word of GS page 168 (DW5 title depth)
     {
         static uint32_t s_last = 0xDEADBEEFu;
         uint32_t word;
@@ -2397,7 +2397,7 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
         std::memcpy(&mid, m_vram + 188u * 8192u + 1024u, 4);
         if (word != s_last)
         {
-            std::fprintf(stderr, "[dw5xl:zwatch] tick=%llu page168[0]=0x%08x page188=0x%08x\n",
+            std::fprintf(stderr, "[dbziw:zwatch] tick=%llu page168[0]=0x%08x page188=0x%08x\n",
                          static_cast<unsigned long long>(request.vsyncTick), word, mid);
             s_last = word;
         }
@@ -2440,7 +2440,7 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
         if (std::memcmp(s_last, cur, sizeof(cur)) != 0)
         {
             std::memcpy(s_last, cur, sizeof(cur));
-            std::fprintf(stderr, "[dw5xl:disp] tick=%llu pmode=%llx smode2=%llx dispfb1=%llx display1=%llx dispfb2=%llx display2=%llx -> %ux%u / %ux%u\n",
+            std::fprintf(stderr, "[dbziw:disp] tick=%llu pmode=%llx smode2=%llx dispfb1=%llx display1=%llx dispfb2=%llx display2=%llx -> %ux%u / %ux%u\n",
                          (unsigned long long)request.vsyncTick, (unsigned long long)cur[0], (unsigned long long)cur[1], (unsigned long long)cur[2],
                          (unsigned long long)cur[3], (unsigned long long)cur[4], (unsigned long long)cur[5], width1, height1, width2, height2);
         }

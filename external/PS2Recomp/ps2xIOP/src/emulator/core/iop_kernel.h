@@ -107,7 +107,7 @@ namespace ps2x::iop::detail
 
         IopMemory &m_memory;
         std::map<int, IopThread> m_threads;
-        // DW5XL: id-ordered view of m_threads for the per-timeslice scheduler scans.
+        // DBZIW: id-ordered view of m_threads for the per-timeslice scheduler scans.
         std::vector<IopThread *> m_threadList;
         bool m_hasDeadThreads = false;
         void rebuildThreadList();

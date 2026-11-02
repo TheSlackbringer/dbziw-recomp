@@ -960,8 +960,8 @@ int EeScheduler::rotateReadyQueue(int priority, bool interruptSafe)
     GuestThread *self = currentThread();
     if (self && self->currentPriority == priority)
     {
-        // DW5XL: a yield costs a few guest cycles but a host context switch, so threads that
-        // busy-yield to each other (DW5XL's movie player) starved guest time and vblanks arrived
+        // DBZIW: a yield costs a few guest cycles but a host context switch, so threads that
+        // busy-yield to each other (DW5's movie player) starved guest time and vblanks arrived
         // ~35x too slowly. Charge a realistic slice; events stay paced by host deadlines.
         constexpr uint32_t kYieldCycles = 100000u;
         accountCycles(kYieldCycles);
@@ -2186,8 +2186,8 @@ void EeScheduler::processDueDeadlines()
     }
 }
 
-static unsigned g_dw5xlCbQueued = 0; // DBZIW-DEBUG
-extern std::atomic<uint32_t> g_dw5xlMpegDemux, g_dw5xlMpegGetPic, g_dw5xlMpegPictures, g_dw5xlStrEvents[8];
+static unsigned g_dbziwCbQueued = 0; // DBZIW-DEBUG
+extern std::atomic<uint32_t> g_dbziwMpegDemux, g_dbziwMpegGetPic, g_dbziwMpegPictures, g_dbziwStrEvents[8];
 
 namespace ps2x_dev
 {
@@ -2232,8 +2232,8 @@ void EeScheduler::processEvent(const EeEvent &event)
             auto rd = [&](uint32_t a) { uint32_t v = 0; std::memcpy(&v, ram + (a & 0x1FFFFFFu), 4); return v; };
             const uint32_t base = rd(0x3591B8u);
             const uint32_t head = rd(0x3697D0u);
-            std::fprintf(stderr, "[dw5xl:movie] queued_cb=%u vsync=%llu cb=0x%x base=0x%x active=0x%x flag=0x%x list=0x%x",
-                         g_dw5xlCbQueued, static_cast<unsigned long long>(m_vsyncTick), m_gsVSyncCallback, base,
+            std::fprintf(stderr, "[dbziw:movie] queued_cb=%u vsync=%llu cb=0x%x base=0x%x active=0x%x flag=0x%x list=0x%x",
+                         g_dbziwCbQueued, static_cast<unsigned long long>(m_vsyncTick), m_gsVSyncCallback, base,
                          base ? rd(base + 0x912C8u) : 0u, base ? rd(base + 0x912C0u) : 0u, head);
             for (uint32_t n = head, i = 0; n && i < 6; n = rd(n), ++i)
                 std::fprintf(stderr, " [fn=0x%x]", rd(n + 4u));
@@ -2261,16 +2261,16 @@ void EeScheduler::processEvent(const EeEvent &event)
                     std::fprintf(stderr, " base{pc=%x ra=%x sp=%x pri=%d}", t.context.pc,
                                  getRegU32(&t.context, 31), getRegU32(&t.context, 29), t.currentPriority);
             }
-            std::fprintf(stderr, " demux=%u getpic=%u pictures=%u ev[v=%u a2=%u a3=%u]\n", g_dw5xlMpegDemux.load(),
-                         g_dw5xlMpegGetPic.load(), g_dw5xlMpegPictures.load(), g_dw5xlStrEvents[0].load(),
-                         g_dw5xlStrEvents[2].load(), g_dw5xlStrEvents[3].load());
+            std::fprintf(stderr, " demux=%u getpic=%u pictures=%u ev[v=%u a2=%u a3=%u]\n", g_dbziwMpegDemux.load(),
+                         g_dbziwMpegGetPic.load(), g_dbziwMpegPictures.load(), g_dbziwStrEvents[0].load(),
+                         g_dbziwStrEvents[2].load(), g_dbziwStrEvents[3].load());
         }
         completeVSync(m_vsyncTick);
         if (m_gsVSyncCallback != 0u && m_runtime.hasFunction(m_gsVSyncCallback))
         {
             GuestInvocation invocation{};
             invocation.kind = GuestInvocationKind::GsCallback;
-            ++g_dw5xlCbQueued; // DBZIW-DEBUG
+            ++g_dbziwCbQueued; // DBZIW-DEBUG
             invocation.context.pc = m_gsVSyncCallback;
             SET_GPR_U32(&invocation.context, 4, static_cast<uint32_t>(m_vsyncTick));
             SET_GPR_U32(&invocation.context, 28, m_gsVSyncCallbackGp);

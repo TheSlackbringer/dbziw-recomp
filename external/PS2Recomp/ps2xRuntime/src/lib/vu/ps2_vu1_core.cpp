@@ -1986,7 +1986,7 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
     // A lifted segment runs to its end; the cycle budget only bounds the
     // interpreter's time slice.
     // PS2X_VU1_RUN_CAPTURE=<prefix> (+ _PC=<entry pc>, _FROM=<tick>, _COUNT=<n>, default 8): saves the start of
-    // VU1 runs (code, data, state) for offline benchmarks (dw5xl_vu1_lift_test benchcap). Game data: keep local.
+    // VU1 runs (code, data, state) for offline benchmarks (DW5 vu1_lift_test benchcap). Game data: keep local.
     static const char *s_runCapture = std::getenv("PS2X_VU1_RUN_CAPTURE");
     if (s_runCapture && *s_runCapture && m_unit == Unit::VU1 && memory && !m_verifyShadow)
     {

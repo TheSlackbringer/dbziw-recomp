@@ -2235,7 +2235,7 @@ void register_ps2_gs_tests()
                     const uint32_t off = referenceAddrPSMCT32(0u, 1u, x, y);
                     for (uint32_t c = 0; c < 4u; ++c)
                     {
-                        // Raw test memory is observable only after queued GS writes complete (as DW5XL issue 022).
+                        // Raw test memory is observable only after queued GS writes complete (as DW5 022).
                         (void)gs.ReadVram(GS_PSM_CT32, 0u, 1u, 0u, 0u);
                         if (vram[off + c] != payload[pixelIndex * 4u + c])
                         {
