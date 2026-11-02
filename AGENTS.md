@@ -177,8 +177,7 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
   a build with it ON writes GBs of log and runs in slow motion while `[hud]` still shows full FPS). Since 009,
   `app/CMakeLists.txt:26` forces it OFF for game builds, but the runtime's own default is still ON for standalone
   runtime/recompiler builds (`ps2xRuntime/CMakeLists.txt:14`; fix: issue 011), and `app/build-mingw` (Linux PC) was
-  configured on 2026-10-20, before that, so its cache still says ON until it is reconfigured. An old `game/ps2_log.txt`
-  (2026-10-20) exists: check the file's time, not only that it exists.
+  configured on 2026-10-20, before that, so its cache still says ON until it is reconfigured.
 - Stub candidates: `tools/audit_stubs.py game/SLES_553.47 recomp/dbz_iw.toml`.
 - Run all fast checks plus checks relevant to the changed area (testing rule above). Available issue tiers:
   `run.py NNN|quick|standard|full`; recommend full after at least three specs are fixed and ask the user before running it.
