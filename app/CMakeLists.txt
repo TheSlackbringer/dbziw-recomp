@@ -78,8 +78,22 @@ target_link_libraries(dbziw_movie_replacement_test PRIVATE dbziw_movie_input)
 set_target_properties(dbziw_movie_replacement_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
 add_test(NAME movie_replacement COMMAND dbziw_movie_replacement_test)
 
-# Game executable (when generated sources exist)
-option(DBZIW_BUILD_GAME "Build the game (needs locally generated code)" OFF)
+# DBZIW-TEST: GS recording tools (tools/gsreplay, issue 017, from DW5 35701a6): inspect and compare PS2X_GS_RECORD
+# recordings, render their frames offline in either renderer, replay a VIF1 capture without the game.
+set(DBZIW_GSREPLAY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../tools/gsreplay")
+add_executable(dbziw_gsrec "${DBZIW_GSREPLAY_DIR}/gsrec.cpp")
+target_include_directories(dbziw_gsrec PRIVATE "${PS2RECOMP_DIR}/ps2xRuntime/src/lib" "${PS2RECOMP_DIR}/ps2xRuntime/include")
+add_executable(dbziw_gsrender "${DBZIW_GSREPLAY_DIR}/gsrender.cpp")
+target_link_libraries(dbziw_gsrender PRIVATE ps2_runtime)
+target_include_directories(dbziw_gsrender PRIVATE "${PS2RECOMP_DIR}/ps2xRuntime/src/lib" "${PS2RECOMP_DIR}/ps2xRuntime/include")
+add_executable(dbziw_vif1_replay "${DBZIW_GSREPLAY_DIR}/vif1_replay.cpp")
+target_link_libraries(dbziw_vif1_replay PRIVATE ps2_runtime)
+target_include_directories(dbziw_vif1_replay PRIVATE "${PS2RECOMP_DIR}/ps2xRuntime/src/lib" "${DBZIW_GSREPLAY_DIR}")
+target_compile_options(dbziw_vif1_replay PRIVATE ${DBZIW_ARCH_FLAGS})
+
+# Game executable (when generated sources exist). ON by default, as in DW5 (6ee9b0b): normal builds and the README
+# steps get the game; OFF builds only what needs no game data (CI).
+option(DBZIW_BUILD_GAME "Build the game (needs locally generated code)" ON)
 if(DBZIW_BUILD_GAME)
     file(GLOB DBZIW_GENERATED_SOURCES CONFIGURE_DEPENDS "${DBZIW_GENERATED_DIR}/*.cpp")
     if(DBZIW_GENERATED_SOURCES)
