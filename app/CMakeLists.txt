@@ -25,8 +25,22 @@ set(PS2X_BUILD_TEST OFF CACHE BOOL "" FORCE)
 set(PS2X_BUILD_STUDIO OFF CACHE BOOL "" FORCE)
 set(PS2X_ENABLE_AGRESSIVE_LOGS OFF CACHE BOOL "" FORCE)
 set(PS2X_MSVC_FAST_FLOAT OFF CACHE BOOL "" FORCE)
+# Issue 010 (DBZIW-DEBUG, DW5 025 b8d976a): profiling markers, debug info and frame pointers for OS recorders (WPR,
+# perf). Use a separate build directory (app/build-diagnostics); never for timing acceptance or releases.
+option(DBZIW_DEVELOPER_DIAGNOSTICS "Developer diagnostics build: profiling markers (issue 010)" OFF)
+if(DBZIW_DEVELOPER_DIAGNOSTICS)
+    add_compile_options(-g -fno-omit-frame-pointer)
+    if(WIN32)
+        add_compile_options(-gcodeview)
+        add_link_options(-Wl,--pdb=)
+    endif()
+endif()
 add_subdirectory("${PS2RECOMP_DIR}" ps2recomp EXCLUDE_FROM_ALL)
 target_compile_options(ps2_runtime PRIVATE ${DBZIW_STRICT_FP_FLAGS})
+if(DBZIW_DEVELOPER_DIAGNOSTICS)
+    target_sources(ps2_runtime PRIVATE "${PS2RECOMP_DIR}/ps2xRuntime/src/lib/ps2_profile_markers.cpp")
+    target_compile_definitions(ps2_runtime PUBLIC DBZIW_DEVELOPER_DIAGNOSTICS=1)
+endif()
 
 # Setup wizard core: reads the player's disc image, checks and extracts it. Needs no game data.
 add_library(dbziw_setup_core STATIC
@@ -123,6 +137,24 @@ set_target_properties(dbziw_vu1_dma_reset_test PROPERTIES RUNTIME_OUTPUT_DIRECTO
 add_test(NAME vu1_dma_reset_interpreter COMMAND dbziw_vu1_dma_reset_test interpreter)
 add_test(NAME vu1_dma_reset_lift COMMAND dbziw_vu1_dma_reset_test lift)
 set_tests_properties(vu1_dma_reset_interpreter vu1_dma_reset_lift PROPERTIES TIMEOUT 20)
+
+# Issue 010 profiling markers (a debugging tool, DW5 0b91b62: not part of CI or normal test runs): built and run only
+# in diagnostic builds. The first test compiles them in itself; the _off test checks that a build without
+# DBZIW_DEVELOPER_DIAGNOSTICS only gets empty inline functions.
+if(DBZIW_DEVELOPER_DIAGNOSTICS)
+    find_package(Threads REQUIRED)
+    add_executable(dbziw_profile_markers_test tests/profile_markers_test.cpp
+        "${PS2RECOMP_DIR}/ps2xRuntime/src/lib/ps2_profile_markers.cpp")
+    target_include_directories(dbziw_profile_markers_test PRIVATE "${PS2RECOMP_DIR}/ps2xRuntime/include")
+    target_compile_definitions(dbziw_profile_markers_test PRIVATE DBZIW_DEVELOPER_DIAGNOSTICS=1)
+    target_link_libraries(dbziw_profile_markers_test PRIVATE Threads::Threads)
+    set_target_properties(dbziw_profile_markers_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
+    add_test(NAME profile_markers COMMAND dbziw_profile_markers_test)
+    add_executable(dbziw_profile_markers_off_test tests/profile_markers_off_test.cpp)
+    target_include_directories(dbziw_profile_markers_off_test PRIVATE "${PS2RECOMP_DIR}/ps2xRuntime/include")
+    set_target_properties(dbziw_profile_markers_off_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
+    add_test(NAME profile_markers_off COMMAND dbziw_profile_markers_off_test)
+endif()
 # ThreadSanitizer variant: the queue, PS2Memory, VIF1 parser and GIF arbiter are recompiled instrumented; their
 # archive copies are then never pulled in.
 option(DBZIW_TSAN_TESTS "Build the ThreadSanitizer variant of the VU1 async queue test" ON)

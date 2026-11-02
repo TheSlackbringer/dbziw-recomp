@@ -1,4 +1,5 @@
 #include "runtime/gs/ps2_gif_arbiter.h"
+#include "runtime/ps2_profile_markers.h"
 #include "ThreadNaming.h"
 #include <algorithm>
 #include <cstdlib>
@@ -136,7 +137,13 @@ void GifArbiter::waitIdle()
     if (std::this_thread::get_id() == m_batchThread)
         flushOutbox();
     std::unique_lock<std::mutex> lock(m_workerMutex);
+    // DBZIW-DEBUG issue 010: a wait on the GS worker, only when it still has work.
+    const bool profileWait = ps2prof::kCompiledIn && (!m_pending.empty() || m_workerBusy);
+    if (profileWait)
+        ps2prof::record(ps2prof::Event::GsWaitStart, m_pending.size());
     m_idleCv.wait(lock, [this] { return m_pending.empty() && !m_workerBusy; });
+    if (profileWait)
+        ps2prof::record(ps2prof::Event::GsWaitEnd, 0u);
 }
 
 void GifArbiter::reset()
