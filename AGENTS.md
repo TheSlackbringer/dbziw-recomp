@@ -211,7 +211,8 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
   - `setup/` — first-launch setup wizard (`disc_setup`, `setup_pipeline`, `wizard_ui`, `wizard_console`,
     `build_game`, `install_state`, `codegen`).
   - `cmake/DbziwPlatform.cmake` — platform options and Windows DLL staging.
-  - tests in `app/tests/` (CTest; today only `setup_disc` — the DW5 runtime tests: 018).
+  - tests in `app/tests/` (CTest: `setup_disc`, 020's movie tests, 018's runtime tests from DW5's fork;
+    `ee_poll_sema` only with generated code).
   - `src/` — `dbziw_movies.cpp` (the libmpeg replacement for Sofdec, 020) and `dbziw_movie_input.*`; no game
     overrides yet, no pad bridge (DBZIW uses the libpad HLE; 021).
 - `tools/` — `regen.sh`, `audit_stubs.py`, `diff_frames.py`, `fix_ghidra_csv.py`, `make_checkpoint.py`,
