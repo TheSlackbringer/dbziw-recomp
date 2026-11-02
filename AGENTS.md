@@ -36,7 +36,8 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
 - **Pushing requires permission:** push only after the user agreed to that push.
 - Changes to `notes/` are tracked in its own local git repo (`git -C notes log`); commit your notes changes there.
 - Before relying on the game files, verify them: `game/SLES_553.47` must match the player's legally dumped retail disc (PAL v1.00)
-  (a checksum check like DW5's `notes/tools/check_game_files.sh`: *planned: 017*).
+  (`notes/tools/check_game_files.py`: size and SHA-256 of every disc file in `game/` against the tracked
+  `app/setup/disc_manifest.h`; `dbztest.py` runs it before the first game run of a test).
 
 ## Working agreement (2026-10-16)
 1. **One folder per issue**, `notes/issues/NNN-short-name/` (local, never committed; templates in `notes/issues/`):
@@ -58,7 +59,8 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
    code changes without an approved spec. While away, the user can allow work on an unapproved spec — explicitly.
 3. **A test per issue, written first:** `notes/issues/tests/issue_NNN_*.py` prints PASS/FAIL and must FAIL on the bug
    before the fix (where measurable). Runner: `notes/issues/tests/run.py NNN|quick|standard|full|list`; helpers and routes in
-   `notes/issues/tests/dbztest.py` *(planned: 017)*. Closed issues keep their tests as regression guards.
+   `notes/issues/tests/dbztest.py` (`run_game` with 014's run-time checks, the preflight, the game-file check,
+   routes boot/title/menu/battle; `dbztest.py route <name>` runs one). Closed issues keep their tests as regression guards.
    - **Automated visual baseline diffs:** for rendering bugs, use `tools/diff_frames.py <port_frame> <pcsx2_frame>` to compute
      perceptual hash and pixel-diff heatmaps against headless PCSX2 software-renderer baseline captures. Report numerical
      mismatch metrics in the test output rather than relying on subjective eyeballing.
@@ -134,8 +136,8 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
 - **Downloads need explicit permission** (name, source, size).
 - **Nothing derived from the game in Git:** no game files (`game/`, `discs/`), Ghidra DBs, generated or lifted C++
   (`recomp/output/`, `recomp/vu0/`, `recomp/vu1/`), frame dumps, captures, AFS/SFD audio/video streams, microcode `.bin`,
-  screenshots. Scan before every commit/push. Hooks in `.githooks/` *(planned: 017)* (`git config core.hooksPath .githooks`);
-  never bypass them (`--no-verify`).
+  screenshots. Scan before every commit/push. Hooks in `.githooks/` (the blocked-path list is `.githooks/game-derived`,
+  which CI uses too; `git config core.hooksPath .githooks` once per checkout); never bypass them (`--no-verify`).
 - **Releases (DW5 011 v5, 2026-10-19):** a release contains only our code and freely licensed tools (the builder:
   setup wizard, recompiler, sources, compiler) — never the compiled game, disc files, an ISO, generated or lifted C++
   or any other game-derived file. The player's PC builds the game (PS2Recomp is GPL-3.0; a shipped game binary would
@@ -168,27 +170,30 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
 ## Essentials
 - Build: `cmake --build app/build` (all), `--target dbziw` (game), `--target dbziw_setup` (setup wizard).
   Regenerate code: `tools/regen.sh` (needs the player's disc in `game/`). CTests: `cd app/build && ctest`.
-- **Preflight before any timing or play run:** `PS2X_ENABLE_AGRESSIVE_LOGS:BOOL=OFF` in the build tree's
-  `CMakeCache.txt`, 0 `PS2_FUNCTION_LOG_TRACKER` in `compile_commands.json`, and no `ps2_log.txt` written (DW5 038:
+- **Preflight before any timing or play run:** `notes/issues/tests/dbztest.py preflight [--build <dir>]`
+  (`run_game` runs it): Release, `PS2X_ENABLE_AGRESSIVE_LOGS:BOOL=OFF` in `CMakeCache.txt`, no `AGRESSIVE_LOGS=1` /
+  `PS2_FUNCTION_LOG_TRACKER` in `compile_commands.json` nor in the game target's own flags (`build.ninja`:
+  `compile_commands.json` has no `dbziw` commands), and no `ps2_log.txt` written (DW5 038:
   a build with it ON writes GBs of log and runs in slow motion while `[hud]` still shows full FPS). Since 009,
   `app/CMakeLists.txt:26` forces it OFF for game builds, but the runtime's own default is still ON for standalone
-  runtime/recompiler builds (`ps2xRuntime/CMakeLists.txt:14`; fix: issue 011), and `app/build-mingw` was configured
-  on 2026-10-20, before that, so its cache still says ON until it is reconfigured. An old `game/ps2_log.txt`
+  runtime/recompiler builds (`ps2xRuntime/CMakeLists.txt:14`; fix: issue 011), and `app/build-mingw` (Linux PC) was
+  configured on 2026-10-20, before that, so its cache still says ON until it is reconfigured. An old `game/ps2_log.txt`
   (2026-10-20) exists: check the file's time, not only that it exists.
 - Stub candidates: `tools/audit_stubs.py game/SLES_553.47 recomp/dbz_iw.toml`.
 - Run all fast checks plus checks relevant to the changed area (testing rule above). Available issue tiers:
   `run.py NNN|quick|standard|full`; recommend full after at least three specs are fixed and ask the user before running it.
 - Visual diffs vs PCSX2: `tools/diff_frames.py <port_frame.png> <pcsx2_ref.png> [--threshold 0.02]`.
-- Unsure how the original looks or behaves: compare with PCSX2 first (`tools/pcsx2_reference.py` *(planned: 017)*),
+- Unsure how the original looks or behaves: compare with PCSX2 first (`tools/pcsx2_reference.py`),
   then ask the user for what screenshots can't show (feel, combat input response, sound timing).
-- Debug code: `DBZIW-DEBUG` (kept, env-gated; the vendored runtime still says `DW5XL-DEBUG` until 017) and
+- Debug code: `DBZIW-DEBUG` (kept, env-gated) and
   `TEMP-DEBUG` (remove before committing).
 
 ## Reference
 
 ### Repository map
 - `external/PS2Recomp/` — vendored upstream runtime/recompiler plus our runtime fixes (ordinary files, copied from
-  `dw5-ps2` at the fork; `DW5XL_VENDORED.md` is DW5's provenance note, to be replaced in 017).
+  `dw5-ps2` at the fork; `DBZIW_VENDORED.md` records the upstream base and the third-party patches applied to it;
+  licences: `LICENSE`, `THIRD_PARTY.md`, `licenses/`).
   - `ps2xRuntime/` — EE runtime: memory, DMA, VIF, VU0/VU1 (interpreter `src/lib/vu/ps2_vu1_core.cpp`, lifted-code
     support `include/runtime/ps2_vu1_lift.h`), GS front end + Vulkan paraLLEl-GS backend, kernel/syscalls, SDK HLE
     stubs (`src/lib/Kernel/Stubs/`, incl. the libpad HLE `Pad.cpp` + `src/lib/ps2_pad.cpp`), EE scheduler
@@ -207,13 +212,16 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
     `build_game`, `install_state`, `codegen`).
   - `cmake/DbziwPlatform.cmake` — platform options and Windows DLL staging.
   - tests in `app/tests/` (CTest; today only `setup_disc` — the DW5 runtime tests: 018).
-  - There is no `app/src/` yet: no game overrides, no CRI/Sofdec glue (020), no pad bridge (DBZIW uses the libpad HLE; 021).
+  - `src/` — `dbziw_movies.cpp` (the libmpeg replacement for Sofdec, 020) and `dbziw_movie_input.*`; no game
+    overrides yet, no pad bridge (DBZIW uses the libpad HLE; 021).
 - `tools/` — `regen.sh`, `audit_stubs.py`, `diff_frames.py`, `fix_ghidra_csv.py`, `make_checkpoint.py`,
   `find_missing_entries.py` (pointer targets with no function), `debug/` (`validate_function_map.py`,
-  `compare_frames.py`), `tests/` (their Python tests), `ghidra_scripts/`, `windows/` (llvm-mingw toolchain, wine runner).
-  *(planned: `pcsx2_reference.py`, `gsreplay/` — 017; `profile/`, `perf_ab.py`, `thread_load.py` — 010; `release/` — 007)*
+  `compare_frames.py`), `tests/` (their Python tests), `ghidra_scripts/`, `windows/` (llvm-mingw toolchain, wine runner),
+  `pcsx2_reference.py`, `gsreplay/` (`dbziw_gsrec`, `dbziw_gsrender`, `dbziw_vif1_replay`; `compare_modes.sh`).
+  *(planned: `profile/`, `perf_ab.py`, `thread_load.py` — 010; `release/` — 007)*
 - `vendor/parallel-gs-patches/` — renderer runtime patches applied to `app/deps/parallel-gs` (README step;
-  not yet tracked in Git — 017).
+  the pre-commit hook checks they apply in order on the pinned revision). `vendor/runtime-patches/` — the runtime
+  patch series the vendored PS2Recomp carries (provenance; `list.txt` has each patch's source).
 - Local, gitignored: `game/` (extracted PAL disc: `SLES_553.47`, `SYSTEM.CNF`, `MODULES/`, `USR/`, `mc0/`, `mc1/`
   memory cards), `discs/`, `ghidra/` (project `dbziw`), `notes/` (own local git repo: issues, evidence, history).
 
@@ -236,9 +244,10 @@ Arrows or WASD (D-pad / Left Stick). Leave ~100 ticks between menu presses.
 A host-input script disables real keyboard polling for the whole run: never set `PS2X_HOST_INPUT`/`PS2X_INPUT` for
 manual play. Silent sink missing after a reboot: `pactl load-module module-null-sink sink_name=dbziw_codex_tests`.
 Stop a game with `kill <pid>` (never `pkill -f dbziw` from a shell whose own command line contains that string).
-Known route until `dbztest.py` exists (017): `120:CROSS:5,400:CROSS:5,800:LEFT:5,850:CROSS:5,950:CROSS:5,1100:CROSS:5,
-1250:CROSS:5,1400:CROSS:5` passes language select, memory card check, the 50/60 Hz selector (the run stays in PAL50;
-which option LEFT picks is not checked, 019) and the autosave warning; the opening movie starts at ~1790 (020 M1;
+Routes: `dbztest.py` (`ROUTE_BOOT`, `ROUTE_MENU`, `ROUTE_BATTLE`). The boot route `120:CROSS:5,400:CROSS:5,
+800:LEFT:5,850:CROSS:5,950:CROSS:5,1100:CROSS:5,1250:CROSS:5,1400:CROSS:5` passes language select (~70–130), the
+logos and the autosave warning; no memory-card check and no 50/60 Hz selector appear (017 M4, frames every 10 ticks:
+`800:LEFT` and `850:CROSS` land on the Dimps logo); the opening movie starts at ~1790 (020 M1;
 checkpoint `notes/issues/tests/out/020-m1-probe/state_1780.bin`). The same route reaches the title screen ("Press
 START button") at ~6750 after the movie (014 M3d). Further, PAL50: `6800:START:5,7100:CROSS:5` (New Game),
 `7300:UP:5,7400:CROSS:5` (create the save file: Yes; use a scratch card folder, `PS2X_MC_ROOT`), main menu at ~7700,
@@ -277,7 +286,8 @@ Graphics: `PS2X_GS_SCALE` / `PS2X_GS_SSAA` · `PS2X_NO_WEAVE` · `PS2X_GS_SYNCRE
 Sound/IOP: `PS2X_SPU2_TRACE` · `PS2X_LIBSD_TRACE` · `PS2X_AUDIO_DUMP=<wav>` (s16 stereo 48 kHz) · `PS2X_AUDIO_TRACE` ·
 `PS2X_SIFAUDIO_TRACE` · `PS2X_MPEGAUDIO_TRACE` · `PS2X_IOP_HEAP_TRACE` · `PS2X_IO_TRACE` · `PS2X_IOP_CLOCK_TRACE` ·
 `PS2X_IOP_CATCHUP_TRACE` (catch-ups > 2 ms, `[iop-catchup]`). Heavy IOP tracing starves audio streams: judge audio untraced.
-Other: `PS2X_MPG_TRACE` · `PS2X_VIF1_CHAIN_TRACE` · `PS2X_RAM_DUMP_TICKS=t1,t2` · `PS2X_RAM_WATCH=addr:len`.
+Other: `PS2X_MPG_TRACE` · `PS2X_VIF1_CHAIN_TRACE` · `PS2X_RAM_DUMP_TICKS=t1,t2` · `PS2X_RAM_WATCH=addr:len` ·
+`PS2X_DUMP_FROM=<a>` / `PS2X_DUMP_TO=<b>` (with `PS2X_DUMP_EVERY`: frame dumps only for ticks in [a, b]).
 *Planned (not in the code yet):* `PS2X_VU0_LIFT`/`_VERIFY`/`PS2X_VU0_CENSUS` (012, only if VU0 microprograms run) ·
 `PS2X_STDIO_DIRECT=1` (bypass the log pump, 011) · `PS2X_PRESENT_STATS`, `PS2X_FIELD_SCANOUT=0`, `PS2X_WEAVE_TRACE`
 (013) · `PS2X_STATE_RESAVE=<file>` (016) · `PS2X_PROFILE_MARKERS=<file>` in `-DDBZIW_DEVELOPER_DIAGNOSTICS=ON`
@@ -290,16 +300,17 @@ its own tests are not in CI or the `run.py` tiers (DW5, 2026-10-22). Who-woke-wh
 kernel setting (`perf_event_paranoid`): a system setting only the user changes.
 
 ### Comparing with the original (PCSX2)
-`tools/pcsx2_reference.py --out <scratch> --seconds <n> [--interval 0.5] [--keys "<sec>:<keysym>,..."]`
-*(planned: 017, ported from DW5)* runs PCSX2 headless on a private Xvfb display with a throwaway copy of its config
-and the software renderer, taking F8 screenshots into `<out>/snaps`. Capture the same moment from the port and
-compare side by side. Use `tools/diff_frames.py` for automated numerical and visual difference heatmaps. Screenshots
-are game-derived (scratch or `notes/evidence/` only). Never touch the user's `~/.config/PCSX2` or send input to the
-real desktop.
+`tools/pcsx2_reference.py --out <new folder> --seconds <n> [--interval 0.5] [--keys "<sec>:<key>,..."]`
+runs PCSX2 where nothing is shown: Linux, a private Xvfb display; Windows, a throwaway portable copy on a hidden
+desktop (keys posted to PCSX2's windows only). Throwaway copy of its settings, software renderer, F8 screenshots into
+`<out>/snaps`, controllers off, no sound. Keys: the port's pad names (`CROSS`, `START`, …) or keysyms. Capture the
+same moment from the port and compare side by side. Use `tools/diff_frames.py` for automated numerical and visual
+difference heatmaps. Screenshots are game-derived (scratch or `notes/evidence/` only). Never touch the user's
+`~/.config/PCSX2` (Linux) or `Documents\PCSX2` (Windows) or send input to the real desktop.
 
 ### Rendering bugs: record and replay one frame
 `PS2X_GS_RECORD=<file> PS2X_GS_RECORD_FROM=<tick> PS2X_GS_RECORD_TO=<tick>` records every renderer call (starts with
-a VRAM snapshot). Replay tools *(planned: 017)*: `app/build/dbziw_gsrender <rec> <cpu|vulkan> <outdir> <ticks> [--fb ...]`
+a VRAM snapshot). Replay tools: `app/build/dbziw_gsrender <rec> <cpu|vulkan> <outdir> <ticks> [--fb ...]`
 replays it; bisect with `--stop-at`. `dbziw_gsrec dump <rec> --from N --count M --fields` lists the draws. Vulkan
 renderer fixes are runtime patches in `vendor/parallel-gs-patches/`.
 
@@ -360,7 +371,8 @@ renderer fixes are runtime patches in `vendor/parallel-gs-patches/`.
   profile's `[[code_copies]]` compile them (014, DW5's entries + `0xfc560`). Without them every installed service
   returns `KE_ERROR`, and since the DW5 038 port a Timer 3 interrupt aborts ("Installed INTC kernel vector has no
   native function").
-- **PAL50 vs PAL60 modes:** Infinite World boots into a 50Hz/60Hz selector screen. The runtime takes the field rate
+- **PAL50 vs PAL60 modes:** No 50/60 Hz selector was seen on the boot route or in Options → Screen (017 M4); how
+  the PAL disc offers 60 Hz is open (019). The runtime takes the field rate
   from the game's `SetGsCrt` (mode 3 = PAL; only modes 2/3 are recognised); the scanout guesses PAL from picture height.
   VSync cadence, CD stream rate, movies and IOP timing must all follow the selected mode (issue 019).
 - **CRI ADX audio & Sofdec SFD video:** Infinite World relies heavily on CRI middleware (`CRI_ADXI.IRX`, AFS archives,
