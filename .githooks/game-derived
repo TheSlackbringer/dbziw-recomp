@@ -2,7 +2,7 @@
 # "Nothing derived from the game in Git"; issue 017). One extended regular expression per line, matched without
 # regard to case against the repository-relative path. A line starting with ! is an exception to the lines above
 # it (add one only with the maintainer's approval). Read by .githooks/blocked-paths, which the pre-commit and
-# pre-push hooks use; CI uses the same list (issue 007).
+# pre-push hooks use; 007's CI is to use the same list (planned).
 
 # The player's disc and the files extracted from it, disc images, memory cards and save states
 ^game/

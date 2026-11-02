@@ -1,8 +1,8 @@
 // Creates functions from a recompiler function list (Name,Start,End,Size CSV), e.g.
-// recomp/dw5xl/overlays/ovl00/ghidra_functions.code.csv for a raw-imported overlay.
+// recomp/ghidra_functions.csv.
 // Disassembles each start, creates the function if missing, and keeps existing names
 // unless the current name is a default FUN_ name.
-//@category DW5XL
+//@category DBZIW
 
 import java.io.BufferedReader;
 import java.io.File;

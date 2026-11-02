@@ -137,7 +137,8 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
 - **Nothing derived from the game in Git:** no game files (`game/`, `discs/`), Ghidra DBs, generated or lifted C++
   (`recomp/output/`, `recomp/vu0/`, `recomp/vu1/`), frame dumps, captures, AFS/SFD audio/video streams, microcode `.bin`,
   screenshots. Scan before every commit/push. Hooks in `.githooks/` (the blocked-path list is `.githooks/game-derived`,
-  which CI uses too; `git config core.hooksPath .githooks` once per checkout); never bypass them (`--no-verify`).
+  which CI will use too *(planned: 007)*; `git config core.hooksPath .githooks` once per checkout); never bypass them
+  (`--no-verify`).
 - **Releases (DW5 011 v5, 2026-10-19):** a release contains only our code and freely licensed tools (the builder:
   setup wizard, recompiler, sources, compiler) — never the compiled game, disc files, an ISO, generated or lifted C++
   or any other game-derived file. The player's PC builds the game (PS2Recomp is GPL-3.0; a shipped game binary would

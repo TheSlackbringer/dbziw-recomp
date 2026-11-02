@@ -48,8 +48,17 @@ __pycache__/
 
 # Game-derived generated code and frame dumps: never commit
 /recomp/*/vu1/
+/recomp/*/vu0/
+/recomp/*/iop/
+/recomp/vu1/
+/recomp/vu0/
+/recomp/iop/
 /final.png
 /frame_*.png
 /dist/
-/BUILD_ID/
+/BUILD_ID
 /build-recomp*/
+
+# Local setup ownership and validated generation records
+/setup.lock
+/cache/generation/
