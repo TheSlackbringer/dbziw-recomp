@@ -218,8 +218,9 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
 - `tools/` — `regen.sh`, `audit_stubs.py`, `diff_frames.py`, `fix_ghidra_csv.py`, `make_checkpoint.py`,
   `find_missing_entries.py` (pointer targets with no function), `debug/` (`validate_function_map.py`,
   `compare_frames.py`), `tests/` (their Python tests), `ghidra_scripts/`, `windows/` (llvm-mingw toolchain, wine runner),
-  `pcsx2_reference.py`, `gsreplay/` (`dbziw_gsrec`, `dbziw_gsrender`, `dbziw_vif1_replay`; `compare_modes.sh`).
-  *(planned: `profile/`, `perf_ab.py`, `thread_load.py` — 010; `release/` — 007)*
+  `pcsx2_reference.py`, `gsreplay/` (`dbziw_gsrec`, `dbziw_gsrender`, `dbziw_vif1_replay`; `compare_modes.sh`),
+  `profile/` (010: the non-pausing profiler, `CONTRACT.md`), `perf_ab.py` (A/B of `[stats]` and dispatch-time logs),
+  `thread_load.py` (CPU % per thread, GPU busy %). *(planned: `release/` — 007)*
 - `vendor/parallel-gs-patches/` — renderer runtime patches applied to `app/deps/parallel-gs` (README step;
   the pre-commit hook checks they apply in order on the pinned revision). `vendor/runtime-patches/` — the runtime
   patch series the vendored PS2Recomp carries (provenance; `list.txt` has each patch's source).
@@ -288,17 +289,22 @@ Sound/IOP: `PS2X_SPU2_TRACE` · `PS2X_LIBSD_TRACE` · `PS2X_AUDIO_DUMP=<wav>` (s
 `PS2X_SIFAUDIO_TRACE` · `PS2X_MPEGAUDIO_TRACE` · `PS2X_IOP_HEAP_TRACE` · `PS2X_IO_TRACE` · `PS2X_IOP_CLOCK_TRACE` ·
 `PS2X_IOP_CATCHUP_TRACE` (catch-ups > 2 ms, `[iop-catchup]`). Heavy IOP tracing starves audio streams: judge audio untraced.
 Other: `PS2X_MPG_TRACE` · `PS2X_VIF1_CHAIN_TRACE` · `PS2X_RAM_DUMP_TICKS=t1,t2` · `PS2X_RAM_WATCH=addr:len` ·
-`PS2X_DUMP_FROM=<a>` / `PS2X_DUMP_TO=<b>` (with `PS2X_DUMP_EVERY`: frame dumps only for ticks in [a, b]).
+`PS2X_DUMP_FROM=<a>` / `PS2X_DUMP_TO=<b>` (with `PS2X_DUMP_EVERY`: frame dumps only for ticks in [a, b]) ·
+`PS2X_PROFILE_MARKERS=<file>` (+ `_CAPACITY`; only in the diagnostic build `app/build-diagnostics`,
+`-DDBZIW_DEVELOPER_DIAGNOSTICS=ON`, 010).
 *Planned (not in the code yet):* `PS2X_VU0_LIFT`/`_VERIFY`/`PS2X_VU0_CENSUS` (012, only if VU0 microprograms run) ·
 `PS2X_STDIO_DIRECT=1` (bypass the log pump, 011) · `PS2X_PRESENT_STATS`, `PS2X_FIELD_SCANOUT=0`, `PS2X_WEAVE_TRACE`
-(013) · `PS2X_STATE_RESAVE=<file>` (016) · `PS2X_PROFILE_MARKERS=<file>` in `-DDBZIW_DEVELOPER_DIAGNOSTICS=ON`
-builds (010) · `PS2X_MUTE=1` (Windows test runs without a silent sink, 011) · `PS2X_SETTINGS_FILE` (028) ·
+(013) · `PS2X_STATE_RESAVE=<file>` (016) · `PS2X_MUTE=1` (Windows test runs without a silent sink, 011) ·
+`PS2X_SETTINGS_FILE` (028) ·
 CRI/Sofdec/IPU traces (020) ·
 `PS2X_PAD_TRACE` (021) · `PS2X_STATE_HASH=<file>` (022).
-Profiling: `perf` and `gprofng` are installed on the Linux test machine; the non-pausing toolkit is issue 010. The
+Profiling: `perf` and `gprofng` are installed on the Linux test machine. The non-pausing toolkit is
+`tools/profile/` (010, `CONTRACT.md`: `capture.py`, `report.py`, `analyze_capture.py`; the diagnostic build's configure
+command is there); one profiled game route: `notes/issues/tests/profile_capture_010.py --route boot|battle`. The
 profiler is a debugging tool, never a test: a profiled run never decides a pass or fail or a timing acceptance, and
-its own tests are not in CI or the `run.py` tiers (DW5, 2026-10-22). Who-woke-whom stacks on Linux need a temporary
-kernel setting (`perf_event_paranoid`): a system setting only the user changes.
+its own tests are not in CI or the `run.py` tiers (DW5, 2026-10-22; `run.py 010` runs its qualification test).
+Who-woke-whom stacks on Linux need two temporary kernel settings (`perf_event_paranoid` -1, tracefs readable by the
+user's group): system settings only the user changes.
 
 ### Comparing with the original (PCSX2)
 `tools/pcsx2_reference.py --out <new folder> --seconds <n> [--interval 0.5] [--keys "<sec>:<key>,..."]`
