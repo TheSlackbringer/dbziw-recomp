@@ -251,6 +251,7 @@ void EeScheduler::run()
     while (!m_stopRequested.load(std::memory_order_acquire))
     {
         pokeWatchdog();
+        markStallStep(StallStep::LoopTop); // DBZIW-DEBUG (issue 020)
         processPendingEvents();
         if (m_stopRequested.load(std::memory_order_acquire))
         {
@@ -259,6 +260,7 @@ void EeScheduler::run()
         // Async VIF1/VU1/GIF device: apply DMA completions the worker already
         // published (CHCR.STR, D_STAT.CIS) and deliver their DMAC causes, the
         // way a finished transfer raises its interrupt between EE instructions.
+        markStallStep(StallStep::DeviceCompletions); // DBZIW-DEBUG (issue 020)
         if (ps2x::device::pollCompletions(m_runtime.memory()))
         {
             m_runtime.drainCompletedDmacHandlers(m_rdram);
@@ -272,6 +274,7 @@ void EeScheduler::run()
                 copyMainContextToRuntime();
                 publishIdleDebugContext();
                 publishSnapshot();
+                markStallStep(StallStep::IdleWait); // DBZIW-DEBUG (issue 020)
                 waitForEvent();
                 continue;
             }
@@ -301,6 +304,7 @@ void EeScheduler::run()
         {
             auto completion = std::move(running->resumeCompletion);
             running->resumeCompletion = {};
+            markStallStep(StallStep::ResumeCompletion, static_cast<uint32_t>(running->id)); // DBZIW-DEBUG (issue 020)
             try
             {
                 completion(running->activeContext());
@@ -335,6 +339,7 @@ void EeScheduler::run()
                 running->invocations.pop_back();
                 if (completed.onComplete)
                 {
+                    markStallStep(StallStep::InvocationComplete, static_cast<uint32_t>(completed.kind)); // DBZIW-DEBUG (issue 020)
                     try
                     {
                         completed.onComplete(completed.context, running->activeContext());
@@ -427,6 +432,10 @@ void EeScheduler::run()
                 }
             }
             m_insideInterrupt = !running->invocations.empty() && running->invocations.back().kind == GuestInvocationKind::Interrupt;
+            // DBZIW-DEBUG (issue 020): detail 0 = the thread's own code, else 1 + the callback's GuestInvocationKind.
+            m_stallGuestThread.store(dispatchTid, std::memory_order_relaxed);
+            m_stallGuestPc.store(dispatchPc, std::memory_order_relaxed);
+            markStallStep(StallStep::Guest, dispatchCallback ? 1u + static_cast<uint32_t>(running->invocations.back().kind) : 0u);
             loadSharedCop2(context);
             m_guestExecuting.store(true, std::memory_order_release);
             function(m_rdram, &context, &m_runtime);
@@ -594,7 +603,13 @@ void EeScheduler::accountCycles(uint32_t cycles) noexcept
     const uint64_t elapsed = std::max<uint64_t>(1u, cycles);
     m_eeCycle += elapsed;
     m_pendingEeTimerInterrupts |= m_runtime.memory().advanceEeTimers(elapsed);
+    // DBZIW-DEBUG (issue 020): IOP time runs on this thread, nested in whatever step accounts the cycles (the detail).
+    const uint8_t outerStep = m_stallStep.load(std::memory_order_relaxed);
+    const uint32_t outerDetail = m_stallDetail.load(std::memory_order_relaxed);
+    markStallStep(StallStep::IopTime, outerStep);
     m_runtime.advanceIopEeCycles(elapsed);
+    m_stallStep.store(outerStep, std::memory_order_relaxed);
+    m_stallDetail.store(outerDetail, std::memory_order_relaxed);
     if (m_pendingEeTimerInterrupts != 0u)
     {
         m_checkpointPending.store(true, std::memory_order_release);
@@ -2018,6 +2033,7 @@ void EeScheduler::applyPendingPreemption()
 void EeScheduler::processPendingEvents()
 {
     assertExecutor();
+    markStallStep(StallStep::Deadlines); // DBZIW-DEBUG (issue 020)
     processDueDeadlines();
     const uint32_t timerInterrupts = m_pendingEeTimerInterrupts;
     m_pendingEeTimerInterrupts = 0u;
@@ -2025,6 +2041,7 @@ void EeScheduler::processPendingEvents()
     {
         if ((timerInterrupts & (1u << timer)) != 0u)
         {
+            markStallStep(StallStep::TimerIrq, timer); // DBZIW-DEBUG (issue 020)
             dispatchIrq(false, 9u + timer);
         }
     }
@@ -2045,6 +2062,7 @@ void EeScheduler::processPendingEvents()
         const bool pendingWork = !m_events.empty() || cycleEventDue || m_stopRequested.load(std::memory_order_acquire);
         m_checkpointPending.store(pendingWork, std::memory_order_release);
     }
+    markStallStep(StallStep::Preemption); // DBZIW-DEBUG (issue 020)
     applyPendingPreemption();
 }
 
@@ -2111,9 +2129,11 @@ void EeScheduler::processDueDeadlines()
 
             if (now < pacingDeadline)
             {
+                markStallStep(StallStep::DeadlineWait); // DBZIW-DEBUG (issue 020)
                 m_eventCv.wait_until(lock, pacingDeadline, [this]()
                                      { return !m_events.empty() ||
                                               m_stopRequested.load(std::memory_order_acquire); });
+                markStallStep(StallStep::Deadlines); // DBZIW-DEBUG (issue 020)
                 if (!m_events.empty() || m_stopRequested.load(std::memory_order_acquire))
                 {
                     updateNextDeadline();
@@ -2197,6 +2217,7 @@ namespace ps2x_dev
 
 void EeScheduler::processEvent(const EeEvent &event)
 {
+    markStallStep(StallStep::Event, static_cast<uint32_t>(event.type)); // DBZIW-DEBUG (issue 020)
     switch (event.type)
     {
     case EeEventType::Stop:
@@ -2587,6 +2608,78 @@ void EeScheduler::dumpStallReport(uint32_t activePc, uint32_t sp, uint32_t ra)
     std::fprintf(stderr, "  VSync Tick:     %llu\n", (unsigned long long)m_vsyncTick.load());
     std::fprintf(stderr, "  EE Cycle:       %llu\n", (unsigned long long)m_eeCycle);
     std::fprintf(stderr, "  Video Mode:     %s\n", m_palVideoMode.load() ? "PAL (50 Hz)" : "NTSC (60 Hz)");
+
+    // DBZIW-DEBUG (issue 020): which dispatcher step has been running since the last watchdog poke, the last game
+    // code dispatched, and every EE thread and semaphore as last published (the snapshot is at most a few dispatches
+    // old; the scheduler is not stopped to read it).
+    static constexpr const char *kSteps[] = {"loop top", "deadlines", "field deadline wait", "EE timer interrupt",
+                                             "event", "preemption", "device DMA completions", "idle wait",
+                                             "resume completion", "callback completion", "game code", "IOP time"};
+    static constexpr const char *kEvents[] = {"Stop", "VBlankStart", "VBlankEnd", "Dmac", "ExternalWake", "Alarm"};
+    static constexpr const char *kInvocations[] = {"Interrupt", "Alarm", "GsCallback", "RpcCallback",
+                                                   "SyscallOverride", "ExitHandler", "HleCall", "SifCommand"};
+    static constexpr const char *kStatus[] = {"running", "ready", "waiting", "waiting+suspended", "suspended", "dormant"};
+    static constexpr const char *kWaits[] = {"-", "sleep", "semaphore", "event flag", "vsync", "external", "mpeg"};
+    const auto name = [](const char *const *names, size_t count, uint32_t value)
+    { return value < count ? names[value] : "?"; };
+    const uint32_t step = m_stallStep.load(std::memory_order_relaxed);
+    const uint32_t detail = m_stallDetail.load(std::memory_order_relaxed);
+    std::string what;
+    switch (static_cast<StallStep>(step))
+    {
+    case StallStep::Event:
+        what = name(kEvents, std::size(kEvents), detail);
+        break;
+    case StallStep::Guest:
+        what = detail == 0u ? "the thread's own code" : std::string("callback ") + name(kInvocations, std::size(kInvocations), detail - 1u);
+        break;
+    case StallStep::IopTime:
+        what = std::string("accounted by: ") + name(kSteps, std::size(kSteps), detail);
+        break;
+    case StallStep::InvocationComplete:
+        what = name(kInvocations, std::size(kInvocations), detail);
+        break;
+    default:
+        what = "detail " + std::to_string(detail);
+        break;
+    }
+    const uint32_t guestPc = m_stallGuestPc.load(std::memory_order_relaxed);
+    std::fprintf(stderr, "  Dispatcher step: %s (%s)\n", name(kSteps, std::size(kSteps), step), what.c_str());
+    std::fprintf(stderr, "  Last game code dispatched: thread %d pc 0x%08X (%s)\n",
+                 m_stallGuestThread.load(std::memory_order_relaxed), guestPc, resolver.resolve(guestPc).c_str());
+    // Never block the watchdog on the snapshot lock: the stalled thread could hold it.
+    EeKernelSnapshot kernel;
+    bool haveSnapshot = false;
+    for (int attempt = 0; attempt < 100 && !haveSnapshot; ++attempt)
+    {
+        std::unique_lock lock(m_snapshotMutex, std::try_to_lock);
+        if (lock.owns_lock())
+        {
+            kernel = m_snapshot;
+            haveSnapshot = true;
+        }
+        else
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    if (!haveSnapshot)
+        std::fprintf(stderr, "  EE threads: snapshot lock busy for 1 s (held by the stalled step?)\n");
+    else
+        std::fprintf(stderr, "  EE threads (snapshot %llu, running %d):\n", (unsigned long long)kernel.sequence,
+                     kernel.runningThreadId);
+    for (const EeThreadSnapshot &t : kernel.threads)
+    {
+        std::fprintf(stderr, "    thread %3d prio %3d %-18s wait %-10s id %3d pc 0x%08X (%s) ra 0x%08X callbacks %u\n",
+                     t.id, t.currentPriority, name(kStatus, std::size(kStatus), static_cast<uint32_t>(t.status)),
+                     name(kWaits, std::size(kWaits), static_cast<uint32_t>(t.waitReason)), t.waitId, t.pc,
+                     resolver.resolve(t.pc).c_str(), t.ra, t.invocationDepth);
+    }
+    for (const EeSemaphoreSnapshot &s : kernel.semaphores)
+    {
+        if (s.waiters != 0u)
+            std::fprintf(stderr, "    semaphore %3d count %d/%d waiters %u\n", s.id, s.count, s.maxCount, s.waiters);
+    }
     std::fprintf(stderr, "================================================================================\n\n");
     std::fflush(stderr);
 }

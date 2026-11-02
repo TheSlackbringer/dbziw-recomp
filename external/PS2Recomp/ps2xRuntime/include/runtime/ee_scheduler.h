@@ -492,4 +492,31 @@ private:
     std::atomic<bool> m_watchdogRunning{false};
     std::thread m_watchdogThread;
     int m_watchdogTimeoutSeconds = 0;
+
+    // DBZIW-DEBUG (issue 020): the dispatcher step in progress, for the stall watchdog's report (a stall is one step
+    // of the dispatcher loop taking longer than the watchdog's limit). Relaxed stores only; the report reads them.
+    enum class StallStep : uint8_t
+    {
+        LoopTop,
+        Deadlines,
+        DeadlineWait,
+        TimerIrq,
+        Event,
+        Preemption,
+        DeviceCompletions,
+        IdleWait,
+        ResumeCompletion,
+        InvocationComplete,
+        Guest,
+        IopTime,
+    };
+    void markStallStep(StallStep step, uint32_t detail = 0u) noexcept
+    {
+        m_stallStep.store(static_cast<uint8_t>(step), std::memory_order_relaxed);
+        m_stallDetail.store(detail, std::memory_order_relaxed);
+    }
+    std::atomic<uint8_t> m_stallStep{0};
+    std::atomic<uint32_t> m_stallDetail{0};
+    std::atomic<int> m_stallGuestThread{0};
+    std::atomic<uint32_t> m_stallGuestPc{0};
 };
