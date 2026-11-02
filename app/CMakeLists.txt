@@ -91,6 +91,58 @@ target_link_libraries(dbziw_vif1_replay PRIVATE ps2_runtime)
 target_include_directories(dbziw_vif1_replay PRIVATE "${PS2RECOMP_DIR}/ps2xRuntime/src/lib" "${DBZIW_GSREPLAY_DIR}")
 target_compile_options(dbziw_vif1_replay PRIVATE ${DBZIW_ARCH_FLAGS})
 
+# DBZIW-TEST: DW5's runtime regression tests at the fork (issue 018, DW5 438a3de app/tests). They guard runtime
+# fixes DBZIW took over at the fork, with authored inputs and small fake function tables: no game data.
+function(dbziw_runtime_test name)
+    add_executable(dbziw_${name}_test tests/${name}_test.cpp ${ARGN})
+    target_link_libraries(dbziw_${name}_test PRIVATE ps2_runtime)
+    target_compile_options(dbziw_${name}_test PRIVATE ${DBZIW_ARCH_FLAGS})
+    set_target_properties(dbziw_${name}_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
+    add_test(NAME ${name} COMMAND dbziw_${name}_test)
+endfunction()
+foreach(name vu_minmax vif_unpack_fast vif_unpack_boundary ee_shared_vu0 cd_iop_read cd_stream_rate presentation_stride)
+    dbziw_runtime_test(${name})
+endforeach()
+foreach(name vu0_macro vu1_fmac_fast ee_rounding) # bit-exact float results
+    dbziw_runtime_test(${name})
+    target_compile_options(dbziw_${name}_test PRIVATE ${DBZIW_STRICT_FP_FLAGS})
+endforeach()
+add_executable(dbziw_field_history_test tests/field_history_test.cpp)
+target_include_directories(dbziw_field_history_test PRIVATE "${PS2RECOMP_DIR}/ps2xRuntime/include")
+set_target_properties(dbziw_field_history_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
+add_test(NAME field_history COMMAND dbziw_field_history_test)
+
+dbziw_runtime_test(vu1_async_queue)
+set_tests_properties(vu1_async_queue PROPERTIES TIMEOUT 20)
+# ThreadSanitizer variant: the queue, PS2Memory, VIF1 parser and GIF arbiter are recompiled instrumented; their
+# archive copies are then never pulled in.
+option(DBZIW_TSAN_TESTS "Build the ThreadSanitizer variant of the VU1 async queue test" ON)
+if(DBZIW_TSAN_TESTS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU" AND NOT WIN32)
+    set(DBZIW_RUNTIME_SRC "${PS2RECOMP_DIR}/ps2xRuntime/src/lib")
+    add_executable(dbziw_vu1_async_queue_tsan_test
+        tests/vu1_async_queue_test.cpp
+        "${DBZIW_RUNTIME_SRC}/ps2_device_queue.cpp"
+        "${DBZIW_RUNTIME_SRC}/ps2_memory.cpp"
+        "${DBZIW_RUNTIME_SRC}/ps2_vif1_interpreter.cpp"
+        "${DBZIW_RUNTIME_SRC}/gs/ps2_gif_arbiter.cpp")
+    target_link_libraries(dbziw_vu1_async_queue_tsan_test PRIVATE ps2_runtime)
+    target_compile_options(dbziw_vu1_async_queue_tsan_test PRIVATE ${DBZIW_ARCH_FLAGS} -fsanitize=thread -g -O1)
+    target_link_options(dbziw_vu1_async_queue_tsan_test PRIVATE -fsanitize=thread)
+    set_target_properties(dbziw_vu1_async_queue_tsan_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
+    add_test(NAME vu1_async_queue_tsan COMMAND dbziw_vu1_async_queue_tsan_test)
+    set_tests_properties(vu1_async_queue_tsan PROPERTIES TIMEOUT 20 ENVIRONMENT "TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1")
+endif()
+
+if(NOT WIN32) # drives the tools through a POSIX shell (env -u, quoting, wait status)
+    add_executable(dbziw_gsreplay_test tests/gsreplay_test.cpp)
+    target_link_libraries(dbziw_gsreplay_test PRIVATE ps2_runtime)
+    target_include_directories(dbziw_gsreplay_test PRIVATE "${PS2RECOMP_DIR}/ps2xRuntime/src/lib" "${DBZIW_GSREPLAY_DIR}")
+    target_compile_options(dbziw_gsreplay_test PRIVATE ${DBZIW_ARCH_FLAGS})
+    set_target_properties(dbziw_gsreplay_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
+    add_test(NAME gsreplay_synthetic COMMAND dbziw_gsreplay_test $<TARGET_FILE:dbziw_vif1_replay>
+             $<TARGET_FILE:dbziw_gsrec> "${CMAKE_CURRENT_BINARY_DIR}/gsreplay_test")
+endif()
+
 # Game executable (when generated sources exist). ON by default, as in DW5 (6ee9b0b): normal builds and the README
 # steps get the game; OFF builds only what needs no game data (CI).
 option(DBZIW_BUILD_GAME "Build the game (needs locally generated code)" ON)
@@ -110,6 +162,22 @@ if(DBZIW_BUILD_GAME)
         target_compile_options(dbziw PRIVATE ${DBZIW_ARCH_FLAGS} ${DBZIW_STRICT_FP_FLAGS})
         set_target_properties(dbziw PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 64)
         set_source_files_properties(setup/wizard_console.cpp src/dbziw_movies.cpp PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+    endif()
+    # DBZIW-TEST: the PollSema contract under the game's own memory-card write (issue 018): compiles three generated
+    # functions, so only where generated code exists, as DW5's version did.
+    set(DBZIW_POLL_SEMA_SOURCES
+        "${DBZIW_GENERATED_DIR}/FUN_00113948_0x113948.cpp"
+        "${DBZIW_GENERATED_DIR}/PollSema_0x101df0.cpp"
+        "${DBZIW_GENERATED_DIR}/SignalSema_0x101dc0.cpp")
+    set(dbziw_have_poll_sema_sources ON)
+    foreach(source IN LISTS DBZIW_POLL_SEMA_SOURCES)
+        if(NOT EXISTS "${source}")
+            set(dbziw_have_poll_sema_sources OFF)
+        endif()
+    endforeach()
+    if(dbziw_have_poll_sema_sources)
+        dbziw_runtime_test(ee_poll_sema ${DBZIW_POLL_SEMA_SOURCES})
+        target_include_directories(dbziw_ee_poll_sema_test PRIVATE "${DBZIW_GENERATED_DIR}" "${PS2RECOMP_DIR}/ps2xRuntime/src/lib")
     endif()
 endif()
 
