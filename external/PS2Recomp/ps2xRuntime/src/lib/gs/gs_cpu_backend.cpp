@@ -1308,7 +1308,7 @@ void GSCpuBackend::WritePixel(RasterWorker &worker, const GSDrawState &state, in
     // Disabling TEST.ZTE bypasses depth testing and also prevents depth writes.
     // The stored ZTST value does not apply while the test is disabled.
     const bool ztestEnabled = ((ctx.test >> 16) & 1u) != 0u;
-    static const bool s_debugZAlways = std::getenv("PS2X_DEBUG_ZALWAYS") != nullptr; // DW5XL-TEST
+    static const bool s_debugZAlways = std::getenv("PS2X_DEBUG_ZALWAYS") != nullptr; // DBZIW-TEST
     const uint32_t ztestMethod = (ztestEnabled && !s_debugZAlways) ? static_cast<uint32_t>((ctx.test >> 17) & 3u) : 1u;
     const bool alphaBlendEnabled = state.prim.abe;
     const bool preserveDestinationAlpha = writeMask.writeRgb && !writeMask.writeAlpha && fpsm == GS_PSM_CT32;
@@ -2388,7 +2388,7 @@ PresentationFrame GSCpuBackend::Present(const GSPresentationRequest &request)
 PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationRequest &request, ReusableFieldWeaver *fieldHistory)
 {
     PresentationFrame result{};
-    if (m_vram && std::getenv("PS2X_ZWATCH")) // DW5XL-DEBUG: watch the first word of GS page 168 (DW5XL title depth)
+    if (m_vram && std::getenv("PS2X_ZWATCH")) // DBZIW-DEBUG: watch the first word of GS page 168 (DW5XL title depth)
     {
         static uint32_t s_last = 0xDEADBEEFu;
         uint32_t word;
@@ -2434,7 +2434,7 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
     uint32_t width1 = 0u, height1 = 0u, width2 = 0u, height2 = 0u;
     decodeDisplaySize(request.display1, frameModeFields, width1, height1);
     decodeDisplaySize(request.display2, frameModeFields, width2, height2);
-    { // DW5XL-DEBUG: log display registers on change
+    { // DBZIW-DEBUG: log display registers on change
         static uint64_t s_last[6] = {};
         const uint64_t cur[6] = {request.pmode, request.smode2, request.dispfb1, request.display1, request.dispfb2, request.display2};
         if (std::memcmp(s_last, cur, sizeof(cur)) != 0)

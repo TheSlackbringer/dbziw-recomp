@@ -306,7 +306,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
 {
     if (sizeBytes == 0u)
         return;
-    Vif1Capture::kick(*this, data, sizeBytes); // DW5XL-DEBUG: PS2X_VIF1_CAPTURE replay input
+    Vif1Capture::kick(*this, data, sizeBytes); // DBZIW-DEBUG: PS2X_VIF1_CAPTURE replay input
 
     const uint64_t parseTick = gs_regs.vsyncTick.load(std::memory_order_acquire);
     static const bool parseEnabled = std::getenv("PS2X_GIF_PARSE_TRACE") != nullptr;
@@ -492,7 +492,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
             uint32_t destAddr = (static_cast<uint32_t>(imm) & 0x7FFu) * 8u;
             const uint32_t instructionCount = (num == 0u) ? 256u : static_cast<uint32_t>(num);
             const uint32_t mpgBytes = instructionCount * 8u;
-            if (std::getenv("PS2X_MPG_TRACE")) // DW5XL-DEBUG
+            if (std::getenv("PS2X_MPG_TRACE")) // DBZIW-DEBUG
             {
                 std::fprintf(stderr, "[dw5xl:mpg] dest=0x%04x bytes=%u available=%u%s", destAddr, mpgBytes,
                              pos <= sizeBytes ? sizeBytes - pos : 0u, pos + mpgBytes > sizeBytes ? " TRUNCATED" : "");

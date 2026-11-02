@@ -2,7 +2,7 @@
 #define PS2X_GS_RECORD_FORMAT_H
 
 // Canonical on-disk format of PS2X_GS_RECORD backend recordings (version 2).
-// DW5XL-TEST: shared by the runtime recorder (gs_record.cpp) and the offline
+// DBZIW-TEST: shared by the runtime recorder (gs_record.cpp) and the offline
 // tools (tools/gsreplay: dw5xl_gsrec diff/dump, dw5xl_vif1_replay).
 //
 // File:    "PS2XGSR2" | u32 version | u32 flags(0)

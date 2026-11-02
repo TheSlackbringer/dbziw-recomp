@@ -712,7 +712,7 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
     if (!data || sizeBytes < 16 || !m_backend)
         return;
 
-    if (GSTrace::enabled()) // DW5XL-DEBUG: mark each GIF packet with its path (pseudo-register 0x7F)
+    if (GSTrace::enabled()) // DBZIW-DEBUG: mark each GIF packet with its path (pseudo-register 0x7F)
     {
         const uint64_t traceTick = m_privRegs ? m_privRegs->vsyncTick.load(std::memory_order_acquire) : 0u;
         GSTrace::registerWrite(0x7F, (static_cast<uint64_t>(g_gifArbiterCurrentPath & 0xFF) << 32) | sizeBytes, traceTick);

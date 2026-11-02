@@ -2186,7 +2186,7 @@ void EeScheduler::processDueDeadlines()
     }
 }
 
-static unsigned g_dw5xlCbQueued = 0; // DW5XL-DEBUG
+static unsigned g_dw5xlCbQueued = 0; // DBZIW-DEBUG
 extern std::atomic<uint32_t> g_dw5xlMpegDemux, g_dw5xlMpegGetPic, g_dw5xlMpegPictures, g_dw5xlStrEvents[8];
 
 namespace ps2x_dev
@@ -2226,7 +2226,7 @@ void EeScheduler::processEvent(const EeEvent &event)
         }
         m_vsyncFlagAddress = 0u;
         m_vsyncTickAddress = 0u;
-        // DW5XL-DEBUG (temporary): movie handshake state every 120 vsyncs.
+        // DBZIW-DEBUG (temporary): movie handshake state every 120 vsyncs.
         if (uint8_t *ram = m_runtime.memory().getRDRAM(); ram && (m_vsyncTick % 120u) == 0u)
         {
             auto rd = [&](uint32_t a) { uint32_t v = 0; std::memcpy(&v, ram + (a & 0x1FFFFFFu), 4); return v; };
@@ -2246,12 +2246,12 @@ void EeScheduler::processEvent(const EeEvent &event)
                                  rd(b + 0x34), rd(b + 0x38), rd(b + 0x3c), rd(b + 0x40), rd(b + 0x48), rd(b + 0x4c), rd(b + 0x50),
                                  rd(b + 0x54));
                 }
-                const uint32_t vr = base + 0x911A0u; // DW5XL-DEBUG video ES ring (FUN_0013d018: c*0x800 + 14)
+                const uint32_t vr = base + 0x911A0u; // DBZIW-DEBUG video ES ring (FUN_0013d018: c*0x800 + 14)
                 std::fprintf(stderr, " vring{10=%x 14=%x 8=%x c=%x}", rd(vr + 0x10), rd(vr + 0x14), rd(vr + 8), rd(vr + 0xC));
                 const uint32_t q = base + 0x91144u;
                 std::fprintf(stderr, " picq{c=%x 10=%x 8=%x}", rd(q + 0xC), rd(q + 0x10), rd(q + 8));
             }
-            for (auto &[tid, t] : m_threads) // DW5XL-DEBUG thread states
+            for (auto &[tid, t] : m_threads) // DBZIW-DEBUG thread states
             {
                 const R5900Context &ac = t.invocations.empty() ? t.context : t.invocations.back().context;
                 std::fprintf(stderr, " T%d{st=%d w=%d id=%d inv=%zu pc=%x ra=%x}", tid, static_cast<int>(t.status),
@@ -2270,7 +2270,7 @@ void EeScheduler::processEvent(const EeEvent &event)
         {
             GuestInvocation invocation{};
             invocation.kind = GuestInvocationKind::GsCallback;
-            ++g_dw5xlCbQueued; // DW5XL-DEBUG
+            ++g_dw5xlCbQueued; // DBZIW-DEBUG
             invocation.context.pc = m_gsVSyncCallback;
             SET_GPR_U32(&invocation.context, 4, static_cast<uint32_t>(m_vsyncTick));
             SET_GPR_U32(&invocation.context, 28, m_gsVSyncCallbackGp);

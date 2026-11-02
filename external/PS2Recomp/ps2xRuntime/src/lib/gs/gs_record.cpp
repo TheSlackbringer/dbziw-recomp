@@ -290,7 +290,7 @@ namespace
         mutable std::mutex m_mutex;
     };
 
-    // DW5XL-TEST: accepts every call and draws nothing (offline replay tools).
+    // DBZIW-TEST: accepts every call and draws nothing (offline replay tools).
     class NullBackend final : public GSRasterBackend
     {
     public:

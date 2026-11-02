@@ -1,7 +1,7 @@
 #ifndef PS2X_VIF1_CAPTURE_H
 #define PS2X_VIF1_CAPTURE_H
 
-// DW5XL-DEBUG: opt-in, bounded capture of VIF1 input for the offline replay
+// DBZIW-DEBUG: opt-in, bounded capture of VIF1 input for the offline replay
 // harness (tools/gsreplay/vif1_replay.cpp). Default off; when the variable is
 // unset the hooks cost one predictable branch.
 //

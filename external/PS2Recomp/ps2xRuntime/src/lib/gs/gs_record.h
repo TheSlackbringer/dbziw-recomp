@@ -20,7 +20,7 @@
 
 std::unique_ptr<GSRasterBackend> makeGsRasterBackend();
 
-// DW5XL-TEST: building blocks for the offline replay tools.
+// DBZIW-TEST: building blocks for the offline replay tools.
 // A backend that accepts every call and draws nothing.
 std::unique_ptr<GSRasterBackend> makeGsNullBackend();
 // Wraps inner in a recorder writing to path; nullptr if path cannot be opened.

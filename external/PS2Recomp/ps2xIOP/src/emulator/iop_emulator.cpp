@@ -168,7 +168,7 @@ namespace ps2x::iop::detail
             hostClockLastTraceNs = hostClockLastNs;
             const char *clockTrace = std::getenv("PS2X_IOP_CLOCK_TRACE");
             hostClockTrace = clockTrace && *clockTrace && std::string_view(clockTrace) != "0";
-            // DW5XL-DEBUG PS2X_IOP_CATCHUP_TRACE=1: log every host-clock catch-up that runs longer than 2 ms
+            // DBZIW-DEBUG PS2X_IOP_CATCHUP_TRACE=1: log every host-clock catch-up that runs longer than 2 ms
             // (issue 003: such calls delay field delivery on the EE scheduler thread).
             const char *catchupTraceEnv = std::getenv("PS2X_IOP_CATCHUP_TRACE");
             catchupTrace = catchupTraceEnv && *catchupTraceEnv && std::string_view(catchupTraceEnv) != "0";
@@ -220,7 +220,7 @@ namespace ps2x::iop::detail
             if (const auto dma = memory.takeDmaStart())
             {
                 pendingDmaInterrupts[dma->irq] = totalCycles + dma->delayCycles;
-                if (std::getenv("PS2X_LIBSD_TRACE")) // DW5XL-DEBUG
+                if (std::getenv("PS2X_LIBSD_TRACE")) // DBZIW-DEBUG
                     std::fprintf(stderr, "[dw5xl:iopdma] start irq=0x%x at=%llu due=%llu\n", dma->irq,
                                  (unsigned long long)totalCycles, (unsigned long long)(totalCycles + dma->delayCycles));
             }
@@ -316,7 +316,7 @@ namespace ps2x::iop::detail
                 cpu.gpr[2] = value;
             };
 
-            if (iequals(call.library, "libsd") && std::getenv("PS2X_LIBSD_TRACE")) // DW5XL-DEBUG
+            if (iequals(call.library, "libsd") && std::getenv("PS2X_LIBSD_TRACE")) // DBZIW-DEBUG
             {
                 static unsigned traced = 0;
                 const uint32_t ord = call.ordinal;
@@ -330,7 +330,7 @@ namespace ps2x::iop::detail
                         std::fprintf(stderr, "[dw5xl:libsd]   batch[%u] func=%u entry=0x%04x value=0x%08x\n", i,
                                      memory.read16(a0 + i * 8u), memory.read16(a0 + i * 8u + 2u), memory.read32(a0 + i * 8u + 4u));
             }
-            // DW5XL-HACK (temporary): libsd #23 sceSdSetEffectAttr never succeeds against the partial
+            // DBZIW-HACK (temporary): libsd #23 sceSdSetEffectAttr never succeeds against the partial
             // SPU2 emulation (returns -210 forever) and DW5/DW5XL loop on it at boot. Report success
             // (no reverb) until SPU2 effect-area handling is emulated.
             if (iequals(call.library, "libsd") && call.ordinal == 23u)
@@ -660,13 +660,13 @@ namespace ps2x::iop::detail
                 {
                     if (!memory.soundDmaActive(irq))
                     {
-                        if (std::getenv("PS2X_LIBSD_TRACE")) // DW5XL-DEBUG
+                        if (std::getenv("PS2X_LIBSD_TRACE")) // DBZIW-DEBUG
                             std::fprintf(stderr, "[dw5xl:iopdma] skip inactive irq=0x%x\n", irq);
                         continue;
                     }
                     memory.completeSoundDma(irq);
                     const auto dispatched = intrman.dispatchInterrupt(irq, *this);
-                    if (std::getenv("PS2X_LIBSD_TRACE")) // DW5XL-DEBUG
+                    if (std::getenv("PS2X_LIBSD_TRACE")) // DBZIW-DEBUG
                         std::fprintf(stderr, "[dw5xl:iopdma] complete irq=0x%x at=%llu dispatched=%d\n", irq,
                                      (unsigned long long)totalCycles, static_cast<int>(dispatched));
                 }
@@ -789,7 +789,7 @@ namespace ps2x::iop::detail
                     const uint64_t before = totalCycles;
                     runCpu(next->cpu, static_cast<uint32_t>(std::min<uint64_t>(kDefaultSlice, target - totalCycles)));
                     next->interruptControl = memory.interruptControl();
-                    if (catchupTrace) // DW5XL-DEBUG
+                    if (catchupTrace) // DBZIW-DEBUG
                         catchupThreadCycles[{next->id, next->entry}] += totalCycles - before;
                     kernel.endTimeslice(*next, kThreadReturnSentinel);
                     if (next->state == IopThreadState::Ready && next->interruptControl == 0u)
@@ -826,7 +826,7 @@ namespace ps2x::iop::detail
             const uint64_t target = clockCycles > maximum - hostClockBaseCycles
                                         ? maximum : hostClockBaseCycles + clockCycles;
             const uint64_t deficit = target > totalCycles ? target - totalCycles : 0u;
-            if (deficit && catchupTrace) // DW5XL-DEBUG (issue 003)
+            if (deficit && catchupTrace) // DBZIW-DEBUG (issue 003)
             {
                 catchupThreadCycles.clear();
                 const uint64_t instructionsBefore = totalInstructions;
@@ -988,8 +988,8 @@ namespace ps2x::iop::detail
         std::optional<uint64_t> hostClockEpochNs;
         uint64_t hostClockLastNs = 0u, hostClockBaseCycles = 0u, hostClockLastTraceNs = 0u;
         bool hostClockTrace = false;
-        bool catchupTrace = false;                                       // DW5XL-DEBUG
-        std::map<std::pair<int, uint32_t>, uint64_t> catchupThreadCycles; // DW5XL-DEBUG: (thread id, entry) -> cycles
+        bool catchupTrace = false;                                       // DBZIW-DEBUG
+        std::map<std::pair<int, uint32_t>, uint64_t> catchupThreadCycles; // DBZIW-DEBUG: (thread id, entry) -> cycles
         CpuState *activeCpu = nullptr;
         std::string lastError;
         bool servicingDmaInterrupts = false;

@@ -1,5 +1,5 @@
 #include <atomic>
-std::atomic<uint32_t> g_dw5xlMpegDemux{0}, g_dw5xlMpegGetPic{0}, g_dw5xlMpegPictures{0}, g_dw5xlStrEvents[8]{}; // DW5XL-DEBUG
+std::atomic<uint32_t> g_dw5xlMpegDemux{0}, g_dw5xlMpegGetPic{0}, g_dw5xlMpegPictures{0}, g_dw5xlStrEvents[8]{}; // DBZIW-DEBUG
 namespace { std::atomic<uint64_t> g_moviePictures{0}; } // decoded pictures handed to the game (F3 FPS)
 #include "Common.h"
 #include "MPEG.h"
@@ -898,7 +898,7 @@ namespace ps2_stubs
             event.pts = pts90k >= 0 ? static_cast<uint64_t>(pts90k) : 0xFFFFFFFFFFFFFFFFull;
             event.dts = dts90k >= 0 ? static_cast<uint64_t>(dts90k) : 0xFFFFFFFFFFFFFFFFull;
             event.callbacks = matchingStreamCallbacks(mpegAddr, streamType);
-            g_dw5xlStrEvents[streamType & 7u].fetch_add(1u, std::memory_order_relaxed); // DW5XL-DEBUG
+            g_dw5xlStrEvents[streamType & 7u].fetch_add(1u, std::memory_order_relaxed); // DBZIW-DEBUG
             if (!event.callbacks.empty())
             {
                 callbackEvents.push_back(std::move(event));
@@ -1298,7 +1298,7 @@ namespace ps2_stubs
                 if (found == g_mpeg_stub_state.playbackByMpeg.end() ||
                     found->second.demuxTransaction != transaction || transaction->finished)
                     return;
-                if (std::getenv("PS2X_MPEGAUDIO_TRACE") && transaction->eventIndex < transaction->events.size()) // DW5XL-DEBUG
+                if (std::getenv("PS2X_MPEGAUDIO_TRACE") && transaction->eventIndex < transaction->events.size()) // DBZIW-DEBUG
                 {
                     const auto &ev = transaction->events[transaction->eventIndex];
                     if (ev.streamType == kMpegStrADPCM)
@@ -1580,7 +1580,7 @@ namespace ps2_stubs
                             // PSS private stream 1 carries a 4-byte prefix whose second byte is the
                             // sub-stream id: 0xA0-0xAF are audio (SShd/SSbd ADPCM or PCM). Other ids
                             // (e.g. DW5XL's 0x90 data track) must not reach audio callbacks.
-                            if (std::getenv("PS2X_MPEGAUDIO_TRACE")) // DW5XL-DEBUG: audio sub-stream bytes
+                            if (std::getenv("PS2X_MPEGAUDIO_TRACE")) // DBZIW-DEBUG: audio sub-stream bytes
                             {
                                 static unsigned logged = 0;
                                 static uint32_t lastPrefix = 0;
@@ -2203,7 +2203,7 @@ namespace ps2_stubs
 
     void sceMpegDemuxPssRing(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        g_dw5xlMpegDemux.fetch_add(1u, std::memory_order_relaxed); // DW5XL-DEBUG
+        g_dw5xlMpegDemux.fetch_add(1u, std::memory_order_relaxed); // DBZIW-DEBUG
         demuxGuestInput(rdram, ctx, runtime, getRegU32(ctx, 7), readAbiArg4(rdram, ctx));
     }
 
@@ -2287,7 +2287,7 @@ namespace ps2_stubs
 
         void getPicture(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, bool serviceInput)
         {
-            g_dw5xlMpegGetPic.fetch_add(1u, std::memory_order_relaxed); // DW5XL-DEBUG
+            g_dw5xlMpegGetPic.fetch_add(1u, std::memory_order_relaxed); // DBZIW-DEBUG
             const uint32_t mpegAddr = getRegU32(ctx, 4);
             const uint32_t imageAddr = getRegU32(ctx, 5);
             uint32_t width = kStubMovieWidth;

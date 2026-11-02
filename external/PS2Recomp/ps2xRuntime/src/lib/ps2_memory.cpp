@@ -1554,7 +1554,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                         }
                         m_ioRegisters[channelBase + 0x10] = madr + gotQw * 16u;
                         m_ioRegisters[channelBase + 0x20] = qwc - gotQw;
-                        static const bool readbackTrace = std::getenv("PS2X_READBACK_TRACE") != nullptr; // DW5XL-DEBUG
+                        static const bool readbackTrace = std::getenv("PS2X_READBACK_TRACE") != nullptr; // DBZIW-DEBUG
                         if (readbackTrace)
                             std::fprintf(stderr, "[vif1:readback] madr=0x%x qwc=%u gotBytes=%u\n", madr, qwc, got);
                         if (gotQw == qwc)
@@ -1654,7 +1654,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                     uint64_t tagsProcessed = 0u;
                     uint32_t lastTagUpper = (chcr >> 16) & 0xFFFFu;
                     struct Dw5Tag { uint32_t at, id, qwc, addr; uint64_t upper; };
-                    static const bool dw5TagTrace = std::getenv("PS2X_VIF1_CHAIN_TRACE") != nullptr; // DW5XL-DEBUG
+                    static const bool dw5TagTrace = std::getenv("PS2X_VIF1_CHAIN_TRACE") != nullptr; // DBZIW-DEBUG
                     std::vector<Dw5Tag> dw5Tags;
 
                     while (true)
@@ -1775,7 +1775,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                             break;
                         }
 
-                        if (dw5TagTrace && dw5Tags.size() < 64u) // DW5XL-DEBUG
+                        if (dw5TagTrace && dw5Tags.size() < 64u) // DBZIW-DEBUG
                             dw5Tags.push_back({currentTagAddr, id, tagQwc, addr, loadScalar<uint64_t>(tp, 8, 16, "dma tag upper", tagAddr)});
                         if (std::getenv("PS2X_VIF_PARSE_DUMP") && channelBase == 0x10009000u &&
                             gs_regs.vsyncTick.load(std::memory_order_acquire) >= 2008u && gs_regs.vsyncTick.load(std::memory_order_acquire) <= 2020u &&
@@ -1802,7 +1802,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                     chcr = (chcr & 0x0000FFFFu) | (lastTagUpper << 16);
                     m_ioRegisters[channelBase + 0x00] = chcr;
 
-                    if (dw5TagTrace && channelBase == 0x10009000u && chainBuf.size() > 65536u) // DW5XL-DEBUG
+                    if (dw5TagTrace && channelBase == 0x10009000u && chainBuf.size() > 65536u) // DBZIW-DEBUG
                     {
                         static unsigned printed = 0;
                         if (printed++ < 4)

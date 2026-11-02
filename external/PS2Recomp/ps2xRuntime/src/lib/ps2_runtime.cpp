@@ -445,6 +445,7 @@ namespace
 //   PS2X_HUD_LOG=1           log the F3 overlay numbers every 0.5 s ([hud] tick fps vsync frameMs maxFrameMs)
 //   PS2X_DUMP_DIR=<dir>      where frame PNGs go (default: cwd)
 //   PS2X_DUMP_EVERY=<n>      dump the presented frame every n vsync ticks
+//   PS2X_DUMP_FROM / _TO=<n> only dump ticks in [from, to] (issue 017, from DW5 70f3336: dumps of a few scenes)
 //   PS2X_EXIT_TICK=<n>       dump final.png and _Exit(0) at vsync tick n
 //   PS2X_INPUT="t:BTN[+BTN]:dur,..."  scripted pad presses at vsync tick t
 //   PS2X_CTRL=<file>         command file polled ~10x/s, consumed on read:
@@ -591,6 +592,8 @@ namespace ps2x_dev
         PS2Runtime *runtime = nullptr;
         std::vector<PressEvent> events;
         uint64_t dumpEvery = 0u;
+        uint64_t dumpFrom = 0u;
+        uint64_t dumpTo = std::numeric_limits<uint64_t>::max();
         uint64_t exitTick = 0u;
         uint64_t lastDumpBucket = std::numeric_limits<uint64_t>::max();
         std::string ctrlPath;
@@ -608,6 +611,8 @@ namespace ps2x_dev
         void init()
         {
             dumpEvery = envU64("PS2X_DUMP_EVERY", 0u);
+            dumpFrom = envU64("PS2X_DUMP_FROM", 0u);
+            dumpTo = envU64("PS2X_DUMP_TO", std::numeric_limits<uint64_t>::max());
             exitTick = envU64("PS2X_EXIT_TICK", 0u);
             if (const char *c = std::getenv("PS2X_CTRL"))
                 ctrlPath = c;
@@ -828,7 +833,7 @@ namespace ps2x_dev
             statsFlips = 0u;
         }
 
-        // DW5XL-DEBUG: PS2X_RAM_DUMP_TICKS="t1,t2" writes ram_<tick>.bin (32 MiB RDRAM) to the dump dir;
+        // DBZIW-DEBUG: PS2X_RAM_DUMP_TICKS="t1,t2" writes ram_<tick>.bin (32 MiB RDRAM) to the dump dir;
         // PS2X_RAM_WATCH="addr:len" logs every tick on which that RDRAM range changed, with its new bytes;
         // "addr:len:stride:count" watches count such ranges stride bytes apart, one field of every object in an array
         // (DBZIW-DEBUG, issue 020: the ADXT players' state bytes).
@@ -919,7 +924,7 @@ namespace ps2x_dev
             stepBurst(tick);
             stepAudioAnchor(tick);
 
-            if (dumpEvery != 0u)
+            if (dumpEvery != 0u && tick >= dumpFrom && tick <= dumpTo)
             {
                 const uint64_t bucket = tick / dumpEvery;
                 if (bucket != lastDumpBucket)
@@ -1266,7 +1271,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
     outDisplayWidth = s_lastDisplayWidth;
     outDisplayHeight = s_lastDisplayHeight;
     s_hasUploadedFrame = true;
-    // DW5XL-DEBUG: PS2X_DRAW_TRACE=1 logs every upload whose image or display size differs from the previous one.
+    // DBZIW-DEBUG: PS2X_DRAW_TRACE=1 logs every upload whose image or display size differs from the previous one.
     static const bool s_drawTrace = [] { const char *e = std::getenv("PS2X_DRAW_TRACE"); return e && *e && *e != '0'; }();
     static uint32_t s_tw = 0, s_th = 0, s_tdw = 0, s_tdh = 0;
     if (s_drawTrace && (s_tw != outWidth || s_th != outHeight || s_tdw != outDisplayWidth || s_tdh != outDisplayHeight))
@@ -1549,7 +1554,7 @@ bool PS2Runtime::syncCoreSubsystems()
                                  { runVu1(false, startPC, top, itop); });
     m_memory.setVu1MscntCallback([runVu1](uint32_t top, uint32_t itop)
                                  { runVu1(true, 0u, top, itop); });
-    // DW5XL-DEBUG: PS2X_VIF1_CAPTURE records VU1 state and the D/T enable bits.
+    // DBZIW-DEBUG: PS2X_VIF1_CAPTURE records VU1 state and the D/T enable bits.
     Vif1Capture::attach(&m_vu1, [this]() -> uint32_t
                         {
                             const R5900Context *context = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;

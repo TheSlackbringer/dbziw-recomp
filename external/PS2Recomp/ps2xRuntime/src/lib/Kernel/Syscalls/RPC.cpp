@@ -591,7 +591,7 @@ namespace ps2_syscalls
             request.endFunction = endFunction;
             request.endParameter = endParameter;
 
-            uint32_t dw5Pre[4] = {}; // DW5XL-DEBUG: KSNH request words before the reply overwrites them
+            uint32_t dw5Pre[4] = {}; // DBZIW-DEBUG: KSNH request words before the reply overwrites them
             const bool dw5Ksnh = sid == 0x4B534E48u && sendBuf && std::getenv("PS2X_KSNH_TRACE");
             if (dw5Ksnh)
                 std::memcpy(dw5Pre, getMemPtr(rdram, sendBuf), std::min<uint32_t>(sendSize, 16u));
@@ -636,7 +636,7 @@ namespace ps2_syscalls
                 std::fprintf(stderr, "[dw5xl:ksnh] rpc=0x%x req=%x %x %x %x reply=%x %x %x %x %x %x\n", rpcNum,
                              dw5Pre[0], dw5Pre[1], dw5Pre[2], dw5Pre[3], r[0], r[1], r[2], r[3], r[4], r[5]);
             }
-            // DW5XL-DEBUG (temporary): log each (sid, rpc) once, then whenever its reply word 0 changes.
+            // DBZIW-DEBUG (temporary): log each (sid, rpc) once, then whenever its reply word 0 changes.
             {
                 static std::unordered_map<uint64_t, std::pair<uint32_t, uint64_t>> seen;
                 const uint32_t replyAddr = iopResult.resultAddress ? iopResult.resultAddress : receiveBuffer;
@@ -943,7 +943,7 @@ namespace ps2_syscalls
             return;
         }
         setReturnS32(ctx, it->second.busy ? 1 : 0);
-        // DW5XL-DEBUG (temporary)
+        // DBZIW-DEBUG (temporary)
         static int dbgStat = 0;
         if (it->second.busy && dbgStat++ < 5)
             std::cerr << "[dw5xl:rpc] checkstat client=0x" << std::hex << clientPtr << " sid=0x" << it->second.sid

@@ -1,4 +1,4 @@
-// DW5XL-DEBUG: opt-in VIF1 replay-input capture (see vif1_capture.h).
+// DBZIW-DEBUG: opt-in VIF1 replay-input capture (see vif1_capture.h).
 #include "vif1_capture.h"
 
 #include "runtime/ps2_memory.h"

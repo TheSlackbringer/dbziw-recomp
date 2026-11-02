@@ -213,7 +213,7 @@ namespace ps2x::iop::detail
             reg(core, offset) = static_cast<uint16_t>((value >> 16) & 15);
             reg(core, offset + 2) = static_cast<uint16_t>(value);
         }
-        unsigned long long pioWrites[2] = {0, 0}; // DW5XL-DEBUG
+        unsigned long long pioWrites[2] = {0, 0}; // DBZIW-DEBUG
         void checkIrq(uint32_t word)
         {
             word &= RamMask;
@@ -593,9 +593,9 @@ namespace ps2x::iop::detail
                              cores[0].masterLeft.level, cores[0].masterRight.level,
                              cores[1].masterLeft.level, cores[1].masterRight.level,
                              cores[0].input.size());
-            if (trace && stats.frames % 48000 == 0) // DW5XL-DEBUG
+            if (trace && stats.frames % 48000 == 0) // DBZIW-DEBUG
                 std::fprintf(stderr, "[SPU2] pio=%llu/%llu tsa=%05X/%05X\n", pioWrites[0], pioWrites[1], address(0, Tsa), address(1, Tsa)),
-                [&] { // DW5XL-DEBUG: non-plain ADPCM block flags in the core1 stream ring
+                [&] { // DBZIW-DEBUG: non-plain ADPCM block flags in the core1 stream ring
                     std::fprintf(stderr, "[SPU2] ringflags:");
                     for (uint32_t w = 0x2808; w < 0x3808; w += 8)
                         if (const uint8_t f = static_cast<uint8_t>(ram[w] >> 8); f != 0x02)
@@ -680,7 +680,7 @@ namespace ps2x::iop::detail
         }
         else if (local == Data)
         {
-            ++impl.pioWrites[core]; // DW5XL-DEBUG
+            ++impl.pioWrites[core]; // DBZIW-DEBUG
             const uint32_t word = impl.address(core, Tsa);
             impl.ramWrite(word, value);
             impl.setAddress(core, Tsa, word + 1);
