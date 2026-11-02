@@ -22,7 +22,8 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
 - **No timing workarounds:** no delays, sleeps or knobs tuned to one game routine or one machine. Fix the root cause.
 - **Evidence before binding:** never bind, unbind or override a runtime SDK HLE stub without evidence of the guest
   contract (arguments, returns, memory written, callbacks, state owned) and whether the game's own compiled SDK code
-  can run unhooked. `tools/audit_stubs.py` gives candidates, not proof (issue 024 builds the evidence report).
+  can run unhooked. `tools/audit_stubs.py` gives candidates, not proof; the evidence report is
+  `tools/debug/audit_bindings.py` (Rules, "Selected SDK binding reviews").
 - **Every claimed result names its log** (`notes/issues/tests/out/...`). "Passes" means the run has finished.
 - **Only the user approves a spec.** Write "approved" only after the user said so, with the date.
 - **Never commit or close an issue without explicit textual approval (DBZIW rule, stricter than DW5):** NEVER create
@@ -124,6 +125,14 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
   investigations. Check edited maps before regeneration; audit corresponding generated output afterwards.
   Record the selected passes, findings and coverage limits in the issue's work log. Unrelated changes,
   ordinary play and FPS profiling do not require it.
+- **Selected SDK binding reviews (DW5; ported in 024, 2026-11-02):** Use `tools/debug/audit_bindings.py` when
+  investigating a suspected SDK replacement error or reviewing changes to binding selection, arguments, returns,
+  memory/state effects, callbacks or ownership. Audit only the relevant bindings and questions. Establish the
+  original's contract independently (Ghidra) and cite the evidence; game-derived evidence and reports stay in
+  `notes/evidence/` and `notes/issues/tests/out/`. Record the report, checked cases and remaining uncertainty in the
+  issue's work log. Missing evidence remains unresolved; a clean report does not prove complete behavioural or
+  gameplay equivalence. Ordinary play, FPS profiling and unrelated changes do not require an audit. See
+  `tools/debug/audit_bindings.md`; the five reviewed groups are in `notes/evidence/024/`.
 - **GPU renderer only** (Vulkan/paraLLEl-GS) for development and tests; no CPU-renderer work unless asked.
 - **The port is not specific to one machine.** Keep fixes portable across supported hardware and the
   planned Linux/Windows targets. The test machine's CPU/GPU are test equipment, not product requirements. Label
@@ -217,7 +226,7 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
     overrides yet, no pad bridge (DBZIW uses the libpad HLE; 021).
 - `tools/` — `regen.sh`, `audit_stubs.py`, `diff_frames.py`, `fix_ghidra_csv.py`, `make_checkpoint.py`,
   `find_missing_entries.py` (pointer targets with no function), `debug/` (`validate_function_map.py`,
-  `compare_frames.py`), `tests/` (their Python tests), `ghidra_scripts/`, `windows/` (llvm-mingw toolchain, wine runner),
+  `compare_frames.py`, `audit_bindings.py`), `tests/` (their Python tests), `ghidra_scripts/`, `windows/` (llvm-mingw toolchain, wine runner),
   `pcsx2_reference.py`, `gsreplay/` (`dbziw_gsrec`, `dbziw_gsrender`, `dbziw_vif1_replay`; `compare_modes.sh`),
   `profile/` (010: the non-pausing profiler, `CONTRACT.md`), `perf_ab.py` (A/B of `[stats]` and dispatch-time logs),
   `thread_load.py` (CPU % per thread, GPU busy %). *(planned: `release/` — 007)*
