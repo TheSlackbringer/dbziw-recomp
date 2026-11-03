@@ -326,68 +326,21 @@ namespace ps2_stubs
 
         if (!ok)
         {
-            // Some game-side wrappers use a nonstandard register layout.
-            // If primary decode does not resolve to a known LBN, try safe alternatives.
-            constexpr uint32_t kMaxReasonableSectors = PS2_RAM_SIZE / kCdSectorSize;
-            if (!isResolvableCdLbn(selected.lbn))
+            // libcdvd's sceCdRead(lsn a0, sectors a1, buffer a2, mode a3): a read this runtime cannot place (no
+            // extracted file and no disc image at that sector) fails and leaves the buffer as it was (DBZIW 035). It
+            // used to retry with the arguments in other orders (other games' wrappers) and zero the buffer: a guess
+            // could write disc data to an address taken from the wrong register.
+            static uint32_t unresolvedLogCount = 0;
+            if (unresolvedLogCount < 32)
             {
-                const std::array<CdReadArgs, 5> alternatives = {
-                    CdReadArgs{a2, a1, a0, "a2/a1/a0"},
-                    CdReadArgs{a0, a2, a1, "a0/a2/a1"},
-                    CdReadArgs{a1, a0, a2, "a1/a0/a2"},
-                    CdReadArgs{a1, a2, a0, "a1/a2/a0"},
-                    CdReadArgs{a2, a0, a1, "a2/a0/a1"}};
-
-                for (const CdReadArgs &candidate : alternatives)
-                {
-                    if (candidate.sectors > kMaxReasonableSectors)
-                    {
-                        continue;
-                    }
-                    if (!isResolvableCdLbn(candidate.lbn))
-                    {
-                        continue;
-                    }
-
-                    if (tryRead(candidate))
-                    {
-                        static uint32_t recoverLogCount = 0;
-                        if (recoverLogCount < 16)
-                        {
-                            RUNTIME_LOG("[sceCdRead] recovered with alternate args " << candidate.tag
-                                                                                     << " (pc=0x" << std::hex << ctx->pc
-                                                                                     << " ra=0x" << getRegU32(ctx, 31)
-                                                                                     << " a0=0x" << a0
-                                                                                     << " a1=0x" << a1
-                                                                                     << " a2=0x" << a2 << std::dec << ")" << std::endl);
-                            ++recoverLogCount;
-                        }
-                        selected = candidate;
-                        ok = true;
-                        break;
-                    }
-                }
-            }
-
-            if (!ok)
-            {
-                const uint32_t offset = a2 & PS2_RAM_MASK;
-                const size_t bytes = clampReadBytes(a1, offset);
-                if (bytes > 0)
-                {
-                    std::memset(rdram + offset, 0, bytes);
-                }
-
-                static uint32_t unresolvedLogCount = 0;
-                if (unresolvedLogCount < 32)
-                {
-                    std::cerr << "[sceCdRead] unresolved request pc=0x" << std::hex << ctx->pc
-                              << " ra=0x" << getRegU32(ctx, 31)
-                              << " a0=0x" << a0
-                              << " a1=0x" << a1
-                              << " a2=0x" << a2 << std::dec << std::endl;
-                    ++unresolvedLogCount;
-                }
+                std::cerr << "[sceCdRead] unresolved request pc=0x" << std::hex << ctx->pc
+                          << " ra=0x" << getRegU32(ctx, 31)
+                          << " lsn=0x" << a0
+                          << " sectors=0x" << a1
+                          << " buffer=0x" << a2
+                          << (isResolvableCdLbn(a0) ? " (read failed)" : " (no file or image at this sector)")
+                          << std::dec << std::endl;
+                ++unresolvedLogCount;
             }
         }
 
