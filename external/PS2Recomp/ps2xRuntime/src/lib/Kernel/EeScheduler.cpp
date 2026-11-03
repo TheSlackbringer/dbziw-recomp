@@ -187,6 +187,15 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
     m_dmacTailOrder = 1000;
     m_enabledIntcMask = 0xFFFFFFFFu;
     m_enabledDmacMask = 0xFFFFFFFFu;
+    // INTC_STAT/INTC_MASK as guest-visible registers (DBZIW 036): the mask stays owned here.
+    m_runtime.memory().ackIntcStat(0xFFFFFFFFu);
+    m_runtime.memory().publishIntcMask(m_enabledIntcMask);
+    m_runtime.memory().setIntcMaskWriteCallback([this](uint32_t toggle)
+    {
+        assertExecutor();
+        m_enabledIntcMask ^= toggle;
+        m_runtime.memory().publishIntcMask(m_enabledIntcMask);
+    });
     m_currentThreadId = 0;
     m_rescheduleRequested = false;
     m_timeSliceExpired = false;
@@ -1473,6 +1482,8 @@ int EeScheduler::setIrqCauseEnabled(bool dmac, uint32_t cause, bool enabled)
         {
             mask &= ~(1u << cause);
         }
+        if (!dmac)
+            m_runtime.memory().publishIntcMask(m_enabledIntcMask);
     }
     return KE_OK;
 }
@@ -1490,6 +1501,11 @@ void EeScheduler::dispatchIrq(bool dmac, uint32_t cause)
         std::cerr << "[ee-irq] dmac=" << dmac << " cause=" << cause
                   << " mask=0x" << std::hex << mask << std::dec
                   << " calls=" << traceCount << std::endl;
+    // INTC_STAT latches the cause whatever the mask (DBZIW 036). The kernel acknowledges it when it takes the
+    // interrupt (a handler or an installed vector below); a cause nothing takes stays set, as on a PS2 where such
+    // a cause is masked, so code that polls INTC_STAT (libgraph's sceGsSyncV) sees it.
+    const uint32_t statBit = (!dmac && cause < 32u) ? (1u << cause) : 0u;
+    m_runtime.memory().raiseIntcStat(statBit);
     if (cause < 32u && (mask & (1u << cause)) == 0u)
     {
         return;
@@ -1504,6 +1520,7 @@ void EeScheduler::dispatchIrq(bool dmac, uint32_t cause)
     {
         if (!m_runtime.hasFunction(kernelHandler))
             throw std::runtime_error("Installed INTC kernel vector has no native function");
+        m_runtime.memory().ackIntcStat(statBit);
         GuestInvocation invocation{};
         invocation.kind = GuestInvocationKind::Interrupt;
         invocation.tag = cause;
@@ -1528,6 +1545,8 @@ void EeScheduler::dispatchIrq(bool dmac, uint32_t cause)
     }
     std::sort(matching.begin(), matching.end(), [](const EeIrqHandler &left, const EeIrqHandler &right)
               { return left.order < right.order; });
+    if (!matching.empty())
+        m_runtime.memory().ackIntcStat(statBit);
     for (const EeIrqHandler &handler : matching)
     {
         if (traceSample)

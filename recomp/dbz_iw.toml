@@ -78,8 +78,6 @@ stubs = [
   # GS Hardware stubs
   "sceGsResetGraph@0x00100350",
   "sceGsResetPath@0x001004F0",
-  "sceGsPutDispEnv@0x00100980",
-  "sceGsSyncV@0x00100EE0",
   "sceGsSyncPath@0x00100F78",
   "sceGsSyncVCallback@0x00101290",
   # SIF DMA & RPC
@@ -164,10 +162,7 @@ stubs = [
   "scePadGetSlotMax@0x0010F710",
   "scePadGetModVersion@0x0010F778",
   "scePadSetWarningLevel@0x0010F7E0",
-  # Sound (LIBSD SPU2)
-  "sceSdRemoteInit@0x0010F9A0",
-  "sceSdTransToIOP@0x0010FA50",
-  "sceSdRemote@0x0010FAF8",
+  # Sound (LIBSD SPU2): none bound; the game's libsd remote runs as its own code (DBZIW 036)
   # Media (CDVD)
   "sceCdCallback@0x0010FE80",
   "sceCdInitEeCB@0x00110058",

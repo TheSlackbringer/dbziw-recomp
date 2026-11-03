@@ -114,7 +114,8 @@ function(dbziw_runtime_test name)
     set_target_properties(dbziw_${name}_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
     add_test(NAME ${name} COMMAND dbziw_${name}_test)
 endfunction()
-foreach(name vu_minmax vif_unpack_fast vif_unpack_boundary ee_shared_vu0 cd_iop_read cd_stream_rate presentation_stride)
+foreach(name vu_minmax vif_unpack_fast vif_unpack_boundary ee_shared_vu0 cd_iop_read cd_stream_rate presentation_stride
+        intc_status) # DBZIW 036
     dbziw_runtime_test(${name})
 endforeach()
 foreach(name vu0_macro vu1_fmac_fast ee_rounding) # bit-exact float results

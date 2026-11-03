@@ -149,6 +149,8 @@ namespace
         0x10001000u,
         0x10001800u,
     };
+    constexpr uint32_t kIntcStatAddress = 0x1000F000u;
+    constexpr uint32_t kIntcMaskAddress = 0x1000F010u;
     constexpr uint32_t kEeTimerCountOffset = 0x00u;
     constexpr uint32_t kEeTimerModeOffset = 0x10u;
     constexpr uint32_t kEeTimerCompareOffset = 0x20u;
@@ -363,6 +365,8 @@ bool PS2Memory::initialize(size_t ramSize)
 
         // Initialize I/O registers
         m_ioRegisters.clear();
+        m_intcStat.store(0u, std::memory_order_relaxed);
+        m_intcMask.store(0xFFFFFFFFu, std::memory_order_relaxed);
 
         // Initialize GS registers
         memset(&gs_regs, 0, sizeof(gs_regs));
@@ -1254,6 +1258,19 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
     // D1/D2/D_STAT/VIF1/GIF/GS register writes wait for queued device work and
     // apply its DMA completion first, exactly as if it had run inline.
     ps2x::device::observeIo(*this, address);
+    if (address == kIntcStatAddress)
+    {
+        ackIntcStat(value); // write 1 to clear
+        return true;
+    }
+    if (address == kIntcMaskAddress)
+    {
+        if (m_intcMaskWrite)
+            m_intcMaskWrite(value); // write 1 to toggle; the scheduler owns the mask
+        else
+            m_intcMask.fetch_xor(value, std::memory_order_relaxed);
+        return true;
+    }
     size_t timerIndex = 0u;
     uint32_t timerOffset = 0u;
     if (decodeEeTimerRegister(address, timerIndex, timerOffset))
@@ -2848,6 +2865,10 @@ int PS2Memory::pollDmaRegisters()
 uint32_t PS2Memory::readIORegister(uint32_t address)
 {
     ps2x::device::observeIo(*this, address);
+    if (address == kIntcStatAddress)
+        return m_intcStat.load(std::memory_order_relaxed);
+    if (address == kIntcMaskAddress)
+        return m_intcMask.load(std::memory_order_relaxed);
     size_t timerIndex = 0u;
     uint32_t timerOffset = 0u;
     if (decodeEeTimerRegister(address, timerIndex, timerOffset))

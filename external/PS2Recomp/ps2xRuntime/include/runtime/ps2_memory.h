@@ -368,6 +368,16 @@ public:
     bool isPath3Masked() const { return m_path3Masked; }
     void flushMaskedPath3Packets(bool drainImmediately = true);
 
+    // EE interrupt controller registers (DBZIW 036): INTC_STAT (0x1000F000) latches every raised cause until the
+    // kernel takes the interrupt or the guest writes 1 to clear it; INTC_MASK (0x1000F010) reads the scheduler's
+    // enabled-cause mask, and a guest write (1 toggles) goes to the scheduler, which owns it.
+    void raiseIntcStat(uint32_t bits) { m_intcStat.fetch_or(bits, std::memory_order_relaxed); }
+    void ackIntcStat(uint32_t bits) { m_intcStat.fetch_and(~bits, std::memory_order_relaxed); }
+    uint32_t intcStat() const { return m_intcStat.load(std::memory_order_relaxed); }
+    void publishIntcMask(uint32_t mask) { m_intcMask.store(mask, std::memory_order_relaxed); }
+    using IntcMaskWriteCallback = std::function<void(uint32_t toggle)>;
+    void setIntcMaskWriteCallback(IntcMaskWriteCallback cb) { m_intcMaskWrite = std::move(cb); }
+
     void submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool drainImmediately = true, bool path2DirectHl = false);
     void processGIFPacket(uint32_t srcPhysAddr, uint32_t qwCount);
     void processGIFPacket(const uint8_t *data, uint32_t sizeBytes);
@@ -460,6 +470,9 @@ public:
     uint8_t *m_vu1Code = nullptr;
     uint8_t *m_vu1Data = nullptr;
     bool m_path3Masked = false;
+    std::atomic<uint32_t> m_intcStat{0u};
+    std::atomic<uint32_t> m_intcMask{0xFFFFFFFFu};
+    IntcMaskWriteCallback m_intcMaskWrite;
     uint32_t m_vif1PendingPath2ImageQwc = 0u;
     bool m_vif1PendingPath2DirectHl = false;
     std::vector<std::vector<uint8_t>> m_path3MaskedFifo;
