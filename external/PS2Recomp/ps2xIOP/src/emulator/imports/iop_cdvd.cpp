@@ -717,8 +717,12 @@ namespace ps2x::iop::detail
                 }
             }
 
-            const char *trace = std::getenv("PS2X_AUDIO_TRACE");
-            if (trace && *trace && std::strcmp(trace, "0") != 0)
+            static const bool audioTrace = [] // read once (DBZIW 011): every sector read checks it
+            {
+                const char *trace = std::getenv("PS2X_AUDIO_TRACE");
+                return trace && *trace && std::strcmp(trace, "0") != 0;
+            }();
+            if (audioTrace)
             {
                 ++readTraceCount;
                 if (readTraceCount <= 32u || (readTraceCount & (readTraceCount - 1u)) == 0u)

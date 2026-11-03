@@ -314,9 +314,10 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
     static const uint64_t parseTo = std::getenv("PS2X_GIF_PARSE_TO") ? std::strtoull(std::getenv("PS2X_GIF_PARSE_TO"), nullptr, 0) : 2020u;
     const bool parseTrace = parseEnabled && parseTick >= parseFrom && parseTick <= parseTo;
     static bool vifRawDumped = false;
-    if (parseTrace && !vifRawDumped && sizeBytes > 500000u && std::getenv("PS2X_VIF_PARSE_DUMP"))
+    static const char *const vifParseDump = std::getenv("PS2X_VIF_PARSE_DUMP"); // read once (DBZIW 011)
+    if (parseTrace && !vifRawDumped && sizeBytes > 500000u && vifParseDump)
     {
-        if (FILE *vifDump = std::fopen(std::getenv("PS2X_VIF_PARSE_DUMP"), "wb"))
+        if (FILE *vifDump = std::fopen(vifParseDump, "wb"))
         {
             std::fwrite(data, 1, sizeBytes, vifDump);
             std::fclose(vifDump);
@@ -492,7 +493,8 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
             uint32_t destAddr = (static_cast<uint32_t>(imm) & 0x7FFu) * 8u;
             const uint32_t instructionCount = (num == 0u) ? 256u : static_cast<uint32_t>(num);
             const uint32_t mpgBytes = instructionCount * 8u;
-            if (std::getenv("PS2X_MPG_TRACE")) // DBZIW-DEBUG
+            static const bool mpgTrace = std::getenv("PS2X_MPG_TRACE") != nullptr; // DBZIW-DEBUG (read once: 011)
+            if (mpgTrace) // DBZIW-DEBUG
             {
                 std::fprintf(stderr, "[dbziw:mpg] dest=0x%04x bytes=%u available=%u%s", destAddr, mpgBytes,
                              pos <= sizeBytes ? sizeBytes - pos : 0u, pos + mpgBytes > sizeBytes ? " TRUNCATED" : "");

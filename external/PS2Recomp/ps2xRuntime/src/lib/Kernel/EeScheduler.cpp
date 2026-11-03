@@ -7,6 +7,7 @@
 #include "ps2_runtime_macros.h"
 #include "runtime/ps2_device_queue.h"
 #include "runtime/ps2_profile_markers.h"
+#include "runtime/ps2_stdio_pump.h"
 
 #include <algorithm>
 #include <cassert>
@@ -2742,6 +2743,9 @@ void EeScheduler::startWatchdog()
                         ra = static_cast<uint32_t>(_mm_extract_epi32(ctx.r[31], 0));
                     }
                     dumpStallReport(activePc, sp, ra);
+                    std::cout.flush();
+                    std::cerr.flush();
+                    ps2x::stdio_pump::drain(); // DBZIW 011: the report is in the pump's pipe; _Exit skips atexit
                     std::_Exit(124);
                 }
             }

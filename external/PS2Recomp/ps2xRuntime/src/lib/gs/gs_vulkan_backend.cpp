@@ -36,6 +36,15 @@ uint32_t transferBits(uint8_t psm)
 {
     return uint32_t(GSMem::BitsPerPixel(GSMem::PixelStorageMode(psm)));
 }
+bool statsEnabled() // read once (DBZIW 011): every presentation asks
+{
+    static const bool on = []
+    {
+        const char *stats = std::getenv("PS2X_STATS");
+        return stats && *stats && *stats != '0';
+    }();
+    return on;
+}
 }
 
 struct GSVulkanBackend::Impl
@@ -159,8 +168,7 @@ struct GSVulkanBackend::Impl
     {
         Util::register_thread_index(0);
         gs.flush(); device.wait_idle();
-        const char *stats = std::getenv("PS2X_STATS");
-        if (stats && *stats && *stats != '0')
+        if (statsEnabled())
             std::fprintf(stderr, "[gs:vulkan] draws=%llu GPU scanouts=%llu CPU display conversions=%llu\n",
                 static_cast<unsigned long long>(draws), static_cast<unsigned long long>(gpuPresentations),
                 static_cast<unsigned long long>(convertedPresentations));
@@ -411,8 +419,7 @@ bool GSVulkanBackend::PresentInto(const GSPresentationRequest &request, Presenta
         ++p.convertedPresentations;
         p.device.next_frame_context();
     }
-    const char *stats = std::getenv("PS2X_STATS");
-    if (stats && *stats && *stats != '0' && (p.gpuPresentations + p.convertedPresentations) % 300u == 0)
+    if (statsEnabled() && (p.gpuPresentations + p.convertedPresentations) % 300u == 0)
         std::fprintf(stderr, "[gs:vulkan] draws=%llu GPU scanouts=%llu CPU display conversions=%llu\n",
             static_cast<unsigned long long>(p.draws), static_cast<unsigned long long>(p.gpuPresentations),
             static_cast<unsigned long long>(p.convertedPresentations));

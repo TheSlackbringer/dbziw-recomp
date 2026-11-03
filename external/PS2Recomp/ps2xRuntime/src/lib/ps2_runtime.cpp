@@ -9,6 +9,7 @@
 #include "gs/gs_trace.h"
 #include "runtime/ee_scheduler.h"
 #include "runtime/ps2_device_queue.h"
+#include "runtime/ps2_stdio_pump.h"
 #include "runtime/ps2_profile_markers.h"
 #include "vif1_capture.h"
 #include "ThreadNaming.h"
@@ -35,10 +36,16 @@ static const char *ps2CrashSignalName(int sig)
 
 static void ps2CrashSignalHandler(int sig)
 {
-    std::fprintf(stderr, "\n================================================================================\n");
-    std::fprintf(stderr, "[GUEST CRASH] Fatal signal %d (%s) caught during execution!\n", sig, ps2CrashSignalName(sig));
-    std::fprintf(stderr, "================================================================================\n");
-    std::fflush(stderr);
+    // Straight to the original stderr destination (DBZIW 011): with the stdio pump in front of stderr, a write into
+    // its pipe would be lost at _Exit, and draining the pump is not safe in a signal handler.
+    char line[320];
+    const int n = std::snprintf(line, sizeof(line),
+                                "\n================================================================================\n"
+                                "[GUEST CRASH] Fatal signal %d (%s) caught during execution!\n"
+                                "================================================================================\n",
+                                sig, ps2CrashSignalName(sig));
+    if (n > 0)
+        ps2x::stdio_pump::writeDirect(2, line, static_cast<size_t>(n) < sizeof(line) ? static_cast<size_t>(n) : sizeof(line) - 1u);
     std::_Exit(139);
 }
 
@@ -726,6 +733,7 @@ namespace ps2x_dev
                     if (runtime) runtime->audioBackend().stopPcmStream();
                     std::cout.flush();
                     std::cerr.flush();
+                    ps2x::stdio_pump::drain(); // DW5 025: _Exit skips atexit; write out the queued log
                     std::_Exit(0);
                 }
             }
@@ -937,8 +945,8 @@ namespace ps2x_dev
                     writePng(dumpDir() + name);
                 }
             }
-            const char *dumpStateEnv = std::getenv("PS2X_DUMP_STATE");
-            const char *dumpTickEnv = std::getenv("PS2X_DUMP_STATE_TICK");
+            static const char *const dumpStateEnv = std::getenv("PS2X_DUMP_STATE");   // read once (DBZIW 011):
+            static const char *const dumpTickEnv = std::getenv("PS2X_DUMP_STATE_TICK"); // checked every field
             uint64_t dumpStateTick = dumpTickEnv ? std::strtoull(dumpTickEnv, nullptr, 0) : exitTick;
             if (dumpStateEnv && *dumpStateEnv && dumpStateTick != 0u && tick == dumpStateTick)
             {
@@ -958,6 +966,7 @@ namespace ps2x_dev
                 if (runtime) runtime->audioBackend().stopPcmStream();
                 std::cout.flush();
                 std::cerr.flush();
+                ps2x::stdio_pump::drain(); // DW5 025: _Exit skips atexit; write out the queued log
                 std::_Exit(0);
             }
         }
@@ -1651,6 +1660,10 @@ bool PS2Runtime::initialize(const char *title)
         }
         InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
         InitAudioDevice();
+        // DBZIW-DEBUG (011, DW5 7f5ebe4): PS2X_MUTE=1 silences the output for test runs where no silent sink exists
+        // (Windows); the audio device and stream keep running exactly as in normal play, only the volume is 0.
+        if (const char *mute = std::getenv("PS2X_MUTE"); mute && *mute == '1')
+            SetMasterVolume(0.0f);
         m_audioBackend.setAudioReady(IsAudioDeviceReady());
         m_audioBackend.startPcmStream();
 #endif

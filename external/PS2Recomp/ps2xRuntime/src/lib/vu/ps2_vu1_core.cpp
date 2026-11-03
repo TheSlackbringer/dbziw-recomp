@@ -5,6 +5,7 @@
 #include "runtime/ps2_device_queue.h"
 #include "runtime/ps2_profile_markers.h"
 #include "ps2_vu1_detail.h"
+#include "ps2_runtime_macros.h"
 
 #include <algorithm>
 #include <bit>
@@ -1113,12 +1114,61 @@ bool VU1Interpreter::pipelinesPending() const
            m_writebackHorizon > m_cycle;
 }
 
+// The PATH1 copy at the end of a run, several quadwords at a time (DW5 025 v9 C3a; DBZIW 011). Only inside a GIFtag's
+// payload (tags take the stepped path) and only up to the cycle before the next pipeline commit, which could change
+// VU data the packet still reads. Bytes, cycle count and credit are exactly those of the stepped loop: one quadword
+// per two cycles (progressXgkick), the j-th of them on cycle m_cycle + 2j - credit.
+bool VU1Interpreter::copyXgkickPayloadInBulk()
+{
+    if (!m_activeVuData || m_activeVuDataSize == 0u || m_xgkick.currentTagEnd == 0u ||
+        m_xgkick.copiedBytes >= m_xgkick.currentTagEnd)
+        return false;
+    constexpr uint64_t kMaxQwords = 64u; // cancellation is checked between steps
+    const uint64_t credit = m_xgkick.cycleCredit;
+    uint64_t qwords = std::min<uint64_t>((m_xgkick.currentTagEnd - m_xgkick.copiedBytes) / 16u, kMaxQwords);
+    if (m_nextCommitCycle != std::numeric_limits<uint64_t>::max())
+    {
+        // A commit applies at the start of its cycle, before that cycle's copy: stay strictly before it.
+        if (m_nextCommitCycle <= m_cycle)
+            return false;
+        qwords = std::min(qwords, (m_nextCommitCycle - m_cycle - 1u + credit) / 2u);
+    }
+    if (qwords == 0u)
+        return false;
+
+    const uint32_t bytes = static_cast<uint32_t>(qwords * 16u);
+    for (uint32_t done = 0; done < bytes;)
+    {
+        const uint32_t source = (m_xgkick.sourceAddress + m_xgkick.copiedBytes + done) % m_activeVuDataSize;
+        const uint32_t n = std::min(bytes - done, m_activeVuDataSize - source);
+        std::memcpy(m_xgkick.packet.data() + m_xgkick.copiedBytes + done, m_activeVuData + source, n);
+        done += n;
+    }
+    m_xgkick.copiedBytes += bytes;
+    m_xgkick.cycleCredit = 0u;
+    m_cycle += 2u * qwords - credit;
+    m_state.cycles = m_cycle;
+    if (m_xgkick.copiedBytes >= m_xgkick.currentTagEnd)
+    {
+        if (m_xgkick.currentTagEop)
+            finishXgkick();
+        else
+        {
+            m_xgkick.currentTagEnd = 0u;
+            m_xgkick.currentTagEop = false;
+        }
+    }
+    return true;
+}
+
 void VU1Interpreter::flushPipelines()
 {
     while (pipelinesPending())
     {
         if (m_unit == Unit::VU1 && ps2x::device::workerShouldCancelVu1())
             break;
+        if (m_xgkick.active && copyXgkickPayloadInBulk())
+            continue;
         if (!m_xgkick.active)
         {
             uint64_t next = m_nextCommitCycle;
@@ -2004,8 +2054,10 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
         census().lastRunBudgetExhausted = false;
         census().lastRunAbnormalStop = false;
     }
-    const int previousRoundingMode = std::fegetround();
-    const bool useVuRounding = std::fesetround(FE_TOWARDZERO) == 0;
+    // VU arithmetic rounds toward zero. Switch only when the caller's mode differs (on the device thread it
+    // already is: the EE runs in round-toward-zero), keeping x87 and SSE coherent; restored on every return
+    // (DW5 025 C2; DBZIW 011: MinGW's fesetround rewrote both control registers twice per run).
+    const Ps2ScopedHostRounding vuRounding(FE_TOWARDZERO);
     // A lifted segment runs to its end; the cycle budget only bounds the
     // interpreter's time slice.
     // PS2X_VU1_RUN_CAPTURE=<prefix> (+ _PC=<entry pc>, _FROM=<tick>, _COUNT=<n>, default 8): saves the start of
@@ -2037,8 +2089,6 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
     }
     if (!m_verifyShadow && runLiftedChecked(vuCode, codeSize, vuData, dataSize, gs, memory))
     {
-        if (useVuRounding && previousRoundingMode != -1)
-            std::fesetround(previousRoundingMode);
         return;
     }
     const uint64_t budgetEnd = m_cycle + maxCycles;
@@ -2200,6 +2250,4 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
         m_pendingHaltT = false;
     }
     m_state.cycles = m_cycle;
-    if (useVuRounding && previousRoundingMode != -1)
-        std::fesetround(previousRoundingMode);
 }

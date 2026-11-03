@@ -1,3 +1,4 @@
+#include "ps2x/iop/iop_ascii.h"
 #include "iop_imports.h"
 
 #include "../core/iop_memory.h"
@@ -15,15 +16,7 @@ namespace ps2x::iop::detail
 
         bool equalsIgnoreCase(std::string_view lhs, std::string_view rhs)
         {
-            if (lhs.size() != rhs.size())
-                return false;
-            for (size_t i = 0; i < lhs.size(); ++i)
-            {
-                if (std::tolower(static_cast<unsigned char>(lhs[i])) !=
-                    std::tolower(static_cast<unsigned char>(rhs[i])))
-                    return false;
-            }
-            return true;
+            return asciiEqualsIgnoreCase(lhs, rhs); // no C-runtime call per character (DBZIW 011)
         }
 
         std::string trimLibraryName(const char *name)

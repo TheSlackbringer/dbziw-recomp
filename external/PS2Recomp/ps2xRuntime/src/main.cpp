@@ -1,5 +1,6 @@
 #include "ps2_runtime.h"
 #include "games_database.h"
+#include "runtime/ps2_stdio_pump.h"
 #if defined(PS2X_ENABLE_DEBUG_UI) && !defined(PLATFORM_VITA)
 #include "ps2_debug_panel.h"
 #endif
@@ -124,6 +125,7 @@ namespace
                                        std::cerr << "[terminate] non-std exception" << std::endl;
                                    }
                                }
+                               ps2x::stdio_pump::drain(); // DW5 025: write out the queued log first
                                std::abort(); });
     }
 
@@ -181,6 +183,11 @@ int main(int argc, char *argv[])
 {
 #if defined(__ANDROID__)
     redirectStdioToLogcat();
+#else
+    // DW5 025 v10 (DBZIW 011): game threads must not wait on a slow log destination (console, pipe, redirect).
+    ps2x::stdio_pump::installStdio();
+    // DW5 023 step 7T: C++ log lines (std::cerr << ... chains) are written whole, never split by another thread.
+    ps2x::stdio_pump::installLineStreams();
 #endif
     setupTerminateLogger();
 
@@ -197,6 +204,7 @@ int main(int argc, char *argv[])
             {
                 std::cout.flush();
                 std::cerr.flush();
+                ps2x::stdio_pump::drain();
                 std::_Exit(exitCode);
             }
         }
@@ -271,6 +279,7 @@ int main(int argc, char *argv[])
 #endif
         std::cout.flush();
         std::cerr.flush();
+        ps2x::stdio_pump::drain();
         std::_Exit(0);
     }
     catch (const std::exception &e)
@@ -284,5 +293,6 @@ int main(int argc, char *argv[])
 
     std::cout.flush();
     std::cerr.flush();
+    ps2x::stdio_pump::drain();
     std::_Exit(1);
 }

@@ -51,8 +51,12 @@ Circuit decodeCircuit(bool enabled, uint64_t framebuffer, uint64_t display, bool
 
 bool noWeave()
 {
-    const char *value = std::getenv("PS2X_NO_WEAVE");
-    return value && *value && *value != '0';
+    static const bool off = [] // read once (DBZIW 011): every presented frame asks
+    {
+        const char *value = std::getenv("PS2X_NO_WEAVE");
+        return value && *value && *value != '0';
+    }();
+    return off;
 }
 }
 

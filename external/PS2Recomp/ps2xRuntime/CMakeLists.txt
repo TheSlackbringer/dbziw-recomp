@@ -11,7 +11,9 @@ option(PS2X_ENABLE_RUNNER_PCH "Precompile the heavy runtime headers for ps2Entry
 option(PS2X_ENABLE_SCCACHE "Use sccache as compiler launcher when available" ON)
 
 option(PS2X_ENABLE_RUNTIME_LOGS "Enable PS2 runtime logs" ON)
-option(PS2X_ENABLE_AGRESSIVE_LOGS "Enable very verbose/agressive PS2 runtime logs" ON)
+# OFF by default (DBZIW 011, DW5 038): ON compiles PS2_FUNCTION_LOG_TRACKER into every generated function, which
+# writes gigabytes of ps2_log.txt and runs the game in slow motion while the overlay still shows full FPS.
+option(PS2X_ENABLE_AGRESSIVE_LOGS "Enable very verbose/agressive PS2 runtime logs" OFF)
 option(PS2X_ENABLE_IOP_RPC_TRACE "Log unhandled IOP/SIF RPC trace suggestions" ON)
 option(PS2X_STRICT_RETURN_DIAGNOSTICS "Route generated JR $ra returns through runtime branch diagnostics" OFF)
 option(PS2X_SHOW_WINDOWS_CONSOLE "Show a console window for ps2EntryRunner on Windows release builds" ON)
@@ -402,6 +404,7 @@ add_library(ps2_runtime STATIC
     src/lib/ps2_rom_device.cpp
     src/lib/ps2_vfs.cpp
     src/lib/ps2_runtime.cpp
+    src/lib/ps2_stdio_pump.cpp
     src/lib/ps2_vif1_interpreter.cpp
     src/lib/vif1_capture.cpp
     src/lib/vu/ps2_vu1_core.cpp

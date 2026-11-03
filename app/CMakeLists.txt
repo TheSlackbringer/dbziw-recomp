@@ -3,6 +3,9 @@
 cmake_minimum_required(VERSION 3.20)
 project(dbziw LANGUAGES C CXX)
 
+# DBZIW 011: every target's compile commands, the game's included, go into compile_commands.json (the preflight
+# checks the game's own flags there; PS2Recomp's CMakeLists exported only the targets below it).
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/DbziwPlatform.cmake")
@@ -119,6 +122,25 @@ foreach(name vu_minmax vif_unpack_fast vif_unpack_boundary ee_shared_vu0 cd_iop_
     dbziw_runtime_test(${name})
 endforeach()
 dbziw_runtime_test(rom_profile src/dbziw_rom_profile.cpp) # DBZIW 037
+# DBZIW 011: DW5 025's guards for the runtime speed fixes (A, B, C2, C3a, C3b, D) and DW5 023 7T.
+foreach(name dma_chain_snapshot vu1_xgkick_tail gif_arbiter_order)
+    dbziw_runtime_test(${name})
+endforeach()
+set_tests_properties(dma_chain_snapshot gif_arbiter_order PROPERTIES TIMEOUT 20)
+dbziw_runtime_test(vu1_rounding_scope)
+target_compile_options(dbziw_vu1_rounding_scope_test PRIVATE ${DBZIW_STRICT_FP_FLAGS})
+add_executable(dbziw_iop_ascii_compare_test tests/iop_ascii_compare_test.cpp)
+target_link_libraries(dbziw_iop_ascii_compare_test PRIVATE ps2_iop)
+set_target_properties(dbziw_iop_ascii_compare_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
+add_test(NAME iop_ascii_compare COMMAND dbziw_iop_ascii_compare_test)
+foreach(name stdio_pump log_lines_whole stdio_pump_exit) # the pump on its own, as in DW5; exit paths: DBZIW 011
+    add_executable(dbziw_${name}_test tests/${name}_test.cpp "${PS2RECOMP_DIR}/ps2xRuntime/src/lib/ps2_stdio_pump.cpp")
+    target_include_directories(dbziw_${name}_test PRIVATE "${PS2RECOMP_DIR}/ps2xRuntime/include")
+    set_target_properties(dbziw_${name}_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
+    add_test(NAME ${name} COMMAND dbziw_${name}_test)
+endforeach()
+set_tests_properties(stdio_pump PROPERTIES TIMEOUT 20)
+set_tests_properties(log_lines_whole PROPERTIES TIMEOUT 30)
 foreach(name vu0_macro vu1_fmac_fast ee_rounding) # bit-exact float results
     dbziw_runtime_test(${name})
     target_compile_options(dbziw_${name}_test PRIVATE ${DBZIW_STRICT_FP_FLAGS})
