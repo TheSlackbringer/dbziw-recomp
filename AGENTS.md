@@ -182,12 +182,11 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
   Regenerate code: `tools/regen.sh` (needs the player's disc in `game/`). CTests: `cd app/build && ctest`.
 - **Preflight before any timing or play run:** `notes/issues/tests/dbztest.py preflight [--build <dir>]`
   (`run_game` runs it): Release, `PS2X_ENABLE_AGRESSIVE_LOGS:BOOL=OFF` in `CMakeCache.txt`, no `AGRESSIVE_LOGS=1` /
-  `PS2_FUNCTION_LOG_TRACKER` in `compile_commands.json` nor in the game target's own flags (`build.ninja`:
-  `compile_commands.json` has no `dbziw` commands), and no `ps2_log.txt` written (DW5 038:
-  a build with it ON writes GBs of log and runs in slow motion while `[hud]` still shows full FPS). Since 009,
-  `app/CMakeLists.txt:26` forces it OFF for game builds, but the runtime's own default is still ON for standalone
-  runtime/recompiler builds (`ps2xRuntime/CMakeLists.txt:14`; fix: issue 011), and `app/build-mingw` (Linux PC) was
-  configured on 2026-10-20, before that, so its cache still says ON until it is reconfigured.
+  `PS2_FUNCTION_LOG_TRACKER` in `compile_commands.json` (since 011 it holds the game target's commands too) nor in
+  the game target's own flags (`build.ninja`), and no `ps2_log.txt` written (DW5 038: a build with it ON writes GBs
+  of log and runs in slow motion while `[hud]` still shows full FPS). The runtime's own default is OFF since 011
+  (`ps2xRuntime/CMakeLists.txt`), and `app/CMakeLists.txt` forces it OFF for game builds (009). `app/build-mingw`
+  (Linux PC) was configured on 2026-10-20 with ON, so its cache still says ON until it is reconfigured.
 - Stub candidates: `tools/audit_stubs.py game/SLES_553.47 recomp/dbz_iw.toml`.
 - Run all fast checks plus checks relevant to the changed area (testing rule above). Available issue tiers:
   `run.py NNN|quick|standard|full`; recommend full after at least three specs are fixed and ask the user before running it.
@@ -291,7 +290,9 @@ Diagnostics/pacing: `PS2X_STALL_WATCHDOG=3` · `PS2X_CRASH_HANDLER=1` · `PS2X_S
 `PS2X_CTRL=<file>` (dev command file) · `PS2X_THREADS_AT_EXIT=1` (EE threads, semaphores and event flags at the exit
 tick) · `PS2X_MC_ROOT=<dir>` (memory card slot 1 folder, slot 2 beside it; tests) · `PS2X_KERNEL_TRACE=1` (FlushCache
 and sceSifLoadElf with their caller, installed kernel services that cannot run) · `PS2X_IRQ_TRACE=1` (EE interrupts
-by cause).
+by cause) · `PS2X_MUTE=1` (master volume 0, the audio device and stream keep running; every test launcher sets it, so
+Windows test runs, which have no silent sink, make no sound; 011) · `PS2X_STDIO_DIRECT=1` (bypass the log pump:
+stdout/stderr written directly, as before 011, for crash hunting; lines may then tear on Windows; 011).
 Graphics: `PS2X_GS_SCALE` / `PS2X_GS_SSAA` · `PS2X_NO_WEAVE` · `PS2X_GS_SYNCREADBACK` · `PS2X_GS_TRACE=<file>` +
 `_FROM/_TO` · `PS2X_GS_RECORD=<file>` + `_FROM/_TO` · `PS2X_VRAM_DUMP=<file>` · `PS2X_XGKICK_CAPTURE=<prefix>` + `_FROM/_TO`.
 Sound/IOP: `PS2X_SPU2_TRACE` · `PS2X_LIBSD_TRACE` · `PS2X_AUDIO_DUMP=<wav>` (s16 stereo 48 kHz) · `PS2X_AUDIO_TRACE` ·
@@ -302,8 +303,7 @@ Other: `PS2X_MPG_TRACE` · `PS2X_VIF1_CHAIN_TRACE` · `PS2X_RAM_DUMP_TICKS=t1,t2
 `PS2X_PROFILE_MARKERS=<file>` (+ `_CAPACITY`; only in the diagnostic build `app/build-diagnostics`,
 `-DDBZIW_DEVELOPER_DIAGNOSTICS=ON`, 010).
 *Planned (not in the code yet):* `PS2X_VU0_LIFT`/`_VERIFY`/`PS2X_VU0_CENSUS` (012, only if VU0 microprograms run) ·
-`PS2X_STDIO_DIRECT=1` (bypass the log pump, 011) · `PS2X_PRESENT_STATS`, `PS2X_FIELD_SCANOUT=0`, `PS2X_WEAVE_TRACE`
-(013) · `PS2X_STATE_RESAVE=<file>` (016) · `PS2X_MUTE=1` (Windows test runs without a silent sink, 011) ·
+`PS2X_PRESENT_STATS`, `PS2X_FIELD_SCANOUT=0`, `PS2X_WEAVE_TRACE` (013) · `PS2X_STATE_RESAVE=<file>` (016) ·
 `PS2X_SETTINGS_FILE` (028) ·
 CRI/Sofdec/IPU traces (020) ·
 `PS2X_PAD_TRACE` (021) · `PS2X_STATE_HASH=<file>` (022).
