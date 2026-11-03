@@ -115,9 +115,10 @@ function(dbziw_runtime_test name)
     add_test(NAME ${name} COMMAND dbziw_${name}_test)
 endfunction()
 foreach(name vu_minmax vif_unpack_fast vif_unpack_boundary ee_shared_vu0 cd_iop_read cd_stream_rate presentation_stride
-        intc_status gs_csr mc_dir_listing cd_read_unknown) # DBZIW 036, 033, 034, 035
+        intc_status gs_csr mc_dir_listing cd_read_unknown sif_register_rpc iop_heap_free deci2_call) # DBZIW 036, 033, 034, 035, 037
     dbziw_runtime_test(${name})
 endforeach()
+dbziw_runtime_test(rom_profile src/dbziw_rom_profile.cpp) # DBZIW 037
 foreach(name vu0_macro vu1_fmac_fast ee_rounding) # bit-exact float results
     dbziw_runtime_test(${name})
     target_compile_options(dbziw_${name}_test PRIVATE ${DBZIW_STRICT_FP_FLAGS})
@@ -197,13 +198,15 @@ if(DBZIW_BUILD_GAME)
             "${PS2RECOMP_DIR}/ps2xRuntime/src/lib/ps2_debug_panel.cpp"
             setup/wizard_console.cpp
             src/dbziw_movies.cpp
+            src/dbziw_rom_profile.cpp
         )
         target_include_directories(dbziw PRIVATE "${DBZIW_GENERATED_DIR}" "${PS2RECOMP_DIR}/ps2xRuntime/src/lib")
         target_link_libraries(dbziw PRIVATE ps2_runtime rlImGui imgui dbziw_setup_ui dbziw_movie_input)
         target_compile_definitions(dbziw PRIVATE PS2X_ENABLE_DEBUG_UI=1 DBZIW_INSTALLED_MODE=1)
         target_compile_options(dbziw PRIVATE ${DBZIW_ARCH_FLAGS} ${DBZIW_STRICT_FP_FLAGS})
         set_target_properties(dbziw PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 64)
-        set_source_files_properties(setup/wizard_console.cpp src/dbziw_movies.cpp PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+        set_source_files_properties(setup/wizard_console.cpp src/dbziw_movies.cpp src/dbziw_rom_profile.cpp
+            PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
     endif()
     # DBZIW-TEST: the PollSema contract under the game's own memory-card write (issue 018): compiles three generated
     # functions, so only where generated code exists, as DW5's version did.

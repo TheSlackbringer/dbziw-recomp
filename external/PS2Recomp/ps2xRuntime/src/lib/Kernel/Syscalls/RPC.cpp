@@ -826,14 +826,11 @@ namespace ps2_syscalls
         uint32_t sid = getRegU32(ctx, 5);
         uint32_t func = getRegU32(ctx, 6);
         uint32_t buf = getRegU32(ctx, 7);
-        // stack args: cfunc, cbuf, qd...
-        uint32_t sp = getRegU32(ctx, 29);
-        uint32_t cfunc = 0;
-        uint32_t cbuf = 0;
-        uint32_t qd = 0;
-        readStackU32(rdram, sp, 0x10, cfunc);
-        readStackU32(rdram, sp, 0x14, cbuf);
-        readStackU32(rdram, sp, 0x18, qd);
+        // sceSifRegisterRpc(sd, sid, func, buf, cfunc, cbuf, qd): the EE ABI passes arguments 5..8 in t0..t3, not on
+        // the stack (DBZIW 037: the game's own callers at 0x11338c and 0x167bcc set t0..t2).
+        uint32_t cfunc = getRegU32(ctx, 8);
+        uint32_t cbuf = getRegU32(ctx, 9);
+        uint32_t qd = getRegU32(ctx, 10);
 
         t_SifRpcServerData *sd = reinterpret_cast<t_SifRpcServerData *>(getMemPtr(rdram, sdPtr));
         if (!sd)

@@ -103,10 +103,7 @@ stubs = [
   "sceSifGetNextRequest@0x00106340",
   "sceSifExecRequest@0x00106398",
   "sceSifRpcLoop@0x00106560",
-  # FileIO
-  "write@0x00102368",
-  "read@0x001023E8",
-  "_sceFsSemInit@0x00106C30",
+  # FileIO (read/write unbound in 037: the game's own console streams run over Deci2Call)
   "sceFsInit@0x00106DB0",
   "sceFsReset@0x00107048",
   "sceOpen@0x001072B0",
@@ -119,6 +116,7 @@ stubs = [
   "sceSifInitIopHeap@0x0010A1D8",
   "sceSifAllocIopHeap@0x0010A260",
   "sceSifAllocSysMemory@0x0010A2D0",
+  "sceSifFreeSysMemory@0x0010A350",
   "sceSifLoadIopHeap@0x0010A3E8",
   "sceSifLoadFileReset@0x0010A8B8",
   "_sceSifLoadModuleBuffer@0x0010A8F0",

@@ -62,8 +62,14 @@ namespace
         return text;
     }
 
+    // The guest's console text is a debug option; Deci2Call's return values are set in every build.
     static void logDeci2Text(const char *prefix, const std::string &text)
     {
+#if !defined(_DEBUG) && !defined(RUNTIME_DECI2CALL)
+        (void)prefix;
+        (void)text;
+        return;
+#endif
         constexpr uint32_t kMaxDeci2TextLogs = 256u;
         const uint32_t logIndex = g_deci2LogCount.fetch_add(1u, std::memory_order_relaxed);
         if (logIndex >= kMaxDeci2TextLogs)
@@ -123,9 +129,11 @@ namespace
 
 namespace ps2_syscalls
 {
+    // DBZIW 037: the body used to be compiled only with _DEBUG or RUNTIME_DECI2CALL, so a Release build set no return
+    // value and a guest console driver (libkernel's read/write over sceDeci2Open) saw the caller's stale v0.
     void Deci2Call(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-#if defined(_DEBUG) || defined(RUNTIME_DECI2CALL)
+        (void)runtime;
         const int32_t code = static_cast<int32_t>(getRegU32(ctx, 4));
         const uint32_t argsAddr = getRegU32(ctx, 5);
 
@@ -206,6 +214,7 @@ namespace ps2_syscalls
         }
         default:
         {
+#if defined(_DEBUG) || defined(RUNTIME_DECI2CALL)
             static std::atomic<uint32_t> s_unknownDeci2Logs{0u};
             constexpr uint32_t kMaxUnknownDeci2Logs = 64u;
             const uint32_t logIndex = s_unknownDeci2Logs.fetch_add(1u, std::memory_order_relaxed);
@@ -221,11 +230,11 @@ namespace ps2_syscalls
                           << " pc=0x" << ctx->pc
                           << std::dec << std::endl;
             }
+#endif
 
             setReturnS32(ctx, KE_OK);
             return;
         }
         }
-#endif
     }
 }
