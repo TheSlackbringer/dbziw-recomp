@@ -302,6 +302,17 @@ namespace ps2_stubs
             out.Year = static_cast<uint16_t>(tm.tm_year + 1900);
         }
 
+        // A host folder can hold files a PS2 memory card never has: dot files ("._x", ".DS_Store"), Windows
+        // Explorer's desktop.ini / Thumbs.db, names longer than a card entry. Listing them changes the entry count
+        // games check (DBZIW 034: a save folder must list exactly 5 entries), so the card listing skips them.
+        bool isHostOnlyMcEntry(const std::string &name)
+        {
+            if (name.empty() || name[0] == '.' || name.size() >= sizeof(SceMcTblGetDir{}.EntryName))
+                return true;
+            const std::string lower = toLowerAscii(name);
+            return lower == "desktop.ini" || lower == "thumbs.db";
+        }
+
         void fillMcDirTableEntry(SceMcTblGetDir &entry,
                                  const std::string &name,
                                  bool isDirectory,
@@ -801,7 +812,7 @@ namespace ps2_stubs
                         for (const auto &entry : dirEntries)
                         {
                             const std::string name = entry.path().filename().string();
-                            if (!wildcardMatch(pattern, name))
+                            if (isHostOnlyMcEntry(name) || !wildcardMatch(pattern, name))
                             {
                                 continue;
                             }
