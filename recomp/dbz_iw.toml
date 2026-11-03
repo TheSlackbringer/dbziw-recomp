@@ -76,10 +76,8 @@ stubs = [
   "ReferSemaStatus@0x00101E10",
   "iReferSemaStatus@0x00101E20",
   # GS Hardware stubs
-  "sceGsResetGraph@0x00100350",
   "sceGsResetPath@0x001004F0",
   "sceGsSyncPath@0x00100F78",
-  "sceGsSyncVCallback@0x00101290",
   # SIF DMA & RPC
   "sceSifSetDma@0x00104CC8",
   "isceSifSetDma@0x00104D50",

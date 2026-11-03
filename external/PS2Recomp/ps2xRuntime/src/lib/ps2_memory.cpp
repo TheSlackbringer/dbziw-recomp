@@ -107,40 +107,27 @@ namespace
     // so the whole read-modify-write is a single atomic step -- this register is
     // also touched by the vsync worker (FIELD bit) and the GIF (SIGNAL/FINISH) on
     // other threads, so a load-then-store here would race with them.
+    // A guest write only clears the interrupt flags SIGNAL/FINISH/HSINT/VSINT/EDWINT (bits 0..4, write one to
+    // clear). FLUSH (8) and RESET (9) are one-shot commands that never read back; NFIELD, FIELD, FIFO and the
+    // revision/ID byte pair (bits 12..31) are read-only (DBZIW 033: libgraph's sceGsResetGraph writes RESET and
+    // then reads the revision). The reset itself is not modelled: the game sets every register it uses afterwards.
     inline void writeCsrHalf(std::atomic<uint64_t> &csr, uint32_t off, uint32_t value)
     {
-        constexpr uint32_t kW1cMask = 0x3u;
+        constexpr uint32_t kW1cMask = 0x1Fu;
+        if (off != 0u)
+            return; // the upper word holds no writable bits
         uint64_t expected = csr.load();
         uint64_t desired;
         do
         {
-            if (off == 0u)
-            {
-                uint32_t oldLow = static_cast<uint32_t>(expected & 0xFFFFFFFFull);
-                uint32_t mergedLow = (oldLow & kW1cMask) | (value & ~kW1cMask);
-                desired = (expected & 0xFFFFFFFF00000000ull) | static_cast<uint64_t>(mergedLow);
-                desired &= ~static_cast<uint64_t>(value & kW1cMask);
-            }
-            else
-            {
-                uint64_t mask = 0xFFFFFFFFull << (off * 8u);
-                desired = (expected & ~mask) | (static_cast<uint64_t>(value) << (off * 8u));
-            }
+            desired = expected & ~static_cast<uint64_t>(value & kW1cMask);
         } while (!csr.compare_exchange_weak(expected, desired));
     }
 
-    // Same as writeCsrHalf but for a full 64-bit CSR write (bits 0..1 are still
-    // write-one-to-clear against the current value).
+    // Same as writeCsrHalf for a full 64-bit CSR write.
     inline void writeCsrFull(std::atomic<uint64_t> &csr, uint64_t value)
     {
-        constexpr uint64_t kW1cMask = 0x3ull;
-        uint64_t expected = csr.load();
-        uint64_t desired;
-        do
-        {
-            desired = (expected & kW1cMask) | (value & ~kW1cMask);
-            desired &= ~(value & kW1cMask);
-        } while (!csr.compare_exchange_weak(expected, desired));
+        writeCsrHalf(csr, 0u, static_cast<uint32_t>(value));
     }
 
     constexpr std::array<uint32_t, 4> kEeTimerBases = {
