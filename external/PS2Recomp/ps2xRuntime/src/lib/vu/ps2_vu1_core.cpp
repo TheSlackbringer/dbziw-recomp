@@ -928,7 +928,7 @@ void VU1Interpreter::progressXgkick()
         m_xgkick.cycleCredit -= 2u;
         if (m_xgkick.copiedBytes > XgkickPipeline::kBufferSize - 16u)
         {
-            reportReservedInstruction(false, 0xFFFFFFFBu);
+            reportInvalidPath1Packet(0xFFFFFFFBu);
             m_xgkick.active = false;
             return;
         }
@@ -968,14 +968,14 @@ void VU1Interpreter::progressXgkick()
                 tagBytes += static_cast<uint64_t>(nloop) * 16u;
             else
             {
-                reportReservedInstruction(false, 0xFFFFFFF8u);
+                reportInvalidPath1Packet(0xFFFFFFF8u);
                 m_xgkick.active = false;
                 return;
             }
 
             if (tagBytes > XgkickPipeline::kBufferSize - qwordOffset)
             {
-                reportReservedInstruction(false, 0xFFFFFFFBu);
+                reportInvalidPath1Packet(0xFFFFFFFBu);
                 m_xgkick.active = false;
                 return;
             }
@@ -1818,6 +1818,14 @@ const VU1Interpreter::DecodedInstructionPair &VU1Interpreter::getDecodedInstruct
     return m_decodedCodeCache[pairIndex];
 }
 
+// A bad PATH1 packet ends the transfer, not the program: the VU runs on, as translated code does (DBZIW 012; never
+// seen in real play, only with a test's synthetic data).
+void VU1Interpreter::reportInvalidPath1Packet(uint32_t code)
+{
+    RUNTIME_ERROR("[VU1 invalid PATH1 packet] cycle=" << m_cycle << " pc=0x" << std::hex << m_state.pc << " code=0x" << code
+                                                      << std::dec << '\n');
+}
+
 void VU1Interpreter::reportReservedInstruction(bool upper, uint32_t instruction)
 {
     RUNTIME_ERROR(
@@ -1832,8 +1840,8 @@ void VU1Interpreter::reportReservedInstruction(bool upper, uint32_t instruction)
 
 namespace
 {
-    // PS2X_VU1_CENSUS=<file>: at exit, write per-(microcode hash, entry PC)
-    // run counts and VU1 cycles, and the microcode images (<file>.<hash>.bin).
+    // PS2X_VU1_CENSUS=<file> / PS2X_VU0_CENSUS=<file> (DBZIW-DEBUG, DW5 025 adds VU0): at exit, write
+    // per-(microcode hash, entry PC) run counts and VU cycles, and the microcode images (<file>.<hash>.bin).
     struct VuCensus
     {
         struct Entry
@@ -1846,6 +1854,8 @@ namespace
             uint64_t budgetExhaustions = 0;
             uint64_t abnormalStops = 0;
             uint32_t lastFinalPc = 0;
+            uint64_t liftedRuns = 0;   // runs and resumes that executed translated code (DW5 025)
+            uint64_t liftedHostNs = 0; // their host time
         };
         std::string path;
         std::map<std::pair<uint64_t, uint32_t>, Entry> entries;
@@ -1860,9 +1870,9 @@ namespace
         uint64_t cachedGeneration = ~0ull;
         uint64_t cachedHash = 0;
 
-        VuCensus()
+        explicit VuCensus(const char *envName)
         {
-            if (const char *env = std::getenv("PS2X_VU1_CENSUS"))
+            if (const char *env = std::getenv(envName))
                 path = env;
         }
         ~VuCensus() { dump(); }
@@ -1905,12 +1915,12 @@ namespace
                 total += e.second.cycles;
             if (FILE *f = std::fopen(path.c_str(), "w"))
             {
-                std::fprintf(f, "# hash entryPC runs resumes cycles cumulative%% hostNs maxHostNs budgetExhaustions abnormalStops lastFinalPC\n");
+                std::fprintf(f, "# hash entryPC runs resumes cycles cumulative%% hostNs maxHostNs budgetExhaustions abnormalStops lastFinalPC liftedRuns liftedHostNs\n");
                 uint64_t running = 0;
                 for (const auto &e : sorted)
                 {
                     running += e.second.cycles;
-                    std::fprintf(f, "%016llx %04x %llu %llu %llu %.2f %llu %llu %llu %llu %04x\n", (unsigned long long)e.first.first,
+                    std::fprintf(f, "%016llx %04x %llu %llu %llu %.2f %llu %llu %llu %llu %04x %llu %llu\n", (unsigned long long)e.first.first,
                                  e.first.second, (unsigned long long)e.second.runs,
                                  (unsigned long long)e.second.resumes, (unsigned long long)e.second.cycles,
                                  total ? 100.0 * running / total : 0.0,
@@ -1918,7 +1928,9 @@ namespace
                                  (unsigned long long)e.second.maxHostNs,
                                  (unsigned long long)e.second.budgetExhaustions,
                                  (unsigned long long)e.second.abnormalStops,
-                                 e.second.lastFinalPc);
+                                 e.second.lastFinalPc,
+                                 (unsigned long long)e.second.liftedRuns,
+                                 (unsigned long long)e.second.liftedHostNs);
                 }
                 std::fclose(f);
             }
@@ -1935,10 +1947,16 @@ namespace
         }
     };
 
-    VuCensus &census()
+    VuCensus &census(VU1Interpreter::Unit unit)
     {
-        static VuCensus instance;
-        return instance;
+        static VuCensus vu1("PS2X_VU1_CENSUS");
+        static VuCensus vu0("PS2X_VU0_CENSUS");
+        return unit == VU1Interpreter::Unit::VU0 ? vu0 : vu1;
+    }
+
+    uint64_t codeGeneration(VU1Interpreter::Unit unit, const PS2Memory &memory)
+    {
+        return unit == VU1Interpreter::Unit::VU0 ? memory.getVU0CodeGeneration() : memory.getVU1CodeGeneration();
     }
 
 #if defined(DBZIW_DEVELOPER_DIAGNOSTICS) && DBZIW_DEVELOPER_DIAGNOSTICS
@@ -1982,10 +2000,10 @@ void VU1Interpreter::execute(uint8_t *vuCode, uint32_t codeSize,
 #if defined(DBZIW_DEVELOPER_DIAGNOSTICS) && DBZIW_DEVELOPER_DIAGNOSTICS
     const ProfileVu1Run profileRun{m_unit == Unit::VU1 && !m_verifyShadow, m_state.pc, m_cycle, m_cycle};
 #endif
-    if (m_unit == Unit::VU1 && census().enabled() && memory)
+    if (census(m_unit).enabled() && memory)
     {
-        VuCensus &c = census();
-        c.lastHash = c.hashOf(vuCode, codeSize, memory->getVU1CodeGeneration());
+        VuCensus &c = census(m_unit);
+        c.lastHash = c.hashOf(vuCode, codeSize, codeGeneration(m_unit, *memory));
         c.lastPc = m_state.pc;
         const uint64_t before = m_cycle;
         const auto hostBefore = std::chrono::steady_clock::now();
@@ -2000,6 +2018,8 @@ void VU1Interpreter::execute(uint8_t *vuCode, uint32_t codeSize,
         e.budgetExhaustions += c.lastRunBudgetExhausted ? 1u : 0u;
         e.abnormalStops += c.lastRunAbnormalStop ? 1u : 0u;
         e.lastFinalPc = m_state.pc;
+        e.liftedRuns += m_lastRunLifted ? 1u : 0u;
+        e.liftedHostNs += m_lastRunLifted ? hostNs : 0u;
         c.maybeDump();
         return;
     }
@@ -2018,15 +2038,17 @@ void VU1Interpreter::resume(uint8_t *vuCode, uint32_t codeSize,
 #if defined(DBZIW_DEVELOPER_DIAGNOSTICS) && DBZIW_DEVELOPER_DIAGNOSTICS
     const ProfileVu1Run profileRun{m_unit == Unit::VU1 && !m_verifyShadow, m_state.pc, m_cycle, m_cycle};
 #endif
-    if (m_unit == Unit::VU1 && census().enabled())
+    if (census(m_unit).enabled())
     {
-        VuCensus &c = census();
+        VuCensus &c = census(m_unit);
         const uint64_t before = m_cycle;
+        // Issue 025: a resume (MSCNT) is filed under the pc it continues from, so its program can be translated.
+        const uint32_t resumePc = m_state.pc;
         const auto hostBefore = std::chrono::steady_clock::now();
         run(vuCode, codeSize, vuData, dataSize, gs, memory, maxCycles);
         const uint64_t hostNs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - hostBefore).count());
-        VuCensus::Entry &e = c.entries[{c.lastHash, c.lastPc}];
+        VuCensus::Entry &e = c.entries[{c.lastHash, resumePc}];
         ++e.resumes;
         e.cycles += m_cycle - before;
         e.hostNs += hostNs;
@@ -2034,6 +2056,8 @@ void VU1Interpreter::resume(uint8_t *vuCode, uint32_t codeSize,
         e.budgetExhaustions += c.lastRunBudgetExhausted ? 1u : 0u;
         e.abnormalStops += c.lastRunAbnormalStop ? 1u : 0u;
         e.lastFinalPc = m_state.pc;
+        e.liftedRuns += m_lastRunLifted ? 1u : 0u;
+        e.liftedHostNs += m_lastRunLifted ? hostNs : 0u;
         c.maybeDump();
         return;
     }
@@ -2049,10 +2073,10 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
     m_activeGs = &gs;
     m_activeMemory = memory;
 
-    if (m_unit == Unit::VU1 && census().enabled() && !m_verifyShadow)
+    if (census(m_unit).enabled() && !m_verifyShadow)
     {
-        census().lastRunBudgetExhausted = false;
-        census().lastRunAbnormalStop = false;
+        census(m_unit).lastRunBudgetExhausted = false;
+        census(m_unit).lastRunAbnormalStop = false;
     }
     // VU arithmetic rounds toward zero. Switch only when the caller's mode differs (on the device thread it
     // already is: the EE runs in round-toward-zero), keeping x87 and SSE coherent; restored on every return
@@ -2087,8 +2111,10 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
             dump(".state", &m_state, sizeof(m_state));
         }
     }
+    m_lastRunLifted = false;
     if (!m_verifyShadow && runLiftedChecked(vuCode, codeSize, vuData, dataSize, gs, memory))
     {
+        m_lastRunLifted = true;
         return;
     }
     const uint64_t budgetEnd = m_cycle + maxCycles;
@@ -2236,10 +2262,10 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
             break;
     }
 
-    if (m_unit == Unit::VU1 && census().enabled() && !m_verifyShadow)
+    if (census(m_unit).enabled() && !m_verifyShadow)
     {
-        census().lastRunBudgetExhausted = !programEnded && m_cycle >= budgetEnd;
-        census().lastRunAbnormalStop = !programEnded && m_cycle < budgetEnd && !m_stopRequested;
+        census(m_unit).lastRunBudgetExhausted = !programEnded && m_cycle >= budgetEnd;
+        census(m_unit).lastRunAbnormalStop = !programEnded && m_cycle < budgetEnd && !m_stopRequested;
     }
     if (programEnded && !resetCanceled)
     {

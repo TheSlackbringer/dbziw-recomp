@@ -87,3 +87,19 @@ echo "Code generation successful: $changes_count files updated in recomp/output/
 head -20 "$tmp/changes.txt"
 echo "Report summary:"
 grep -E "(Functions discovered|Functions processed|Indirect fallback promotions|Unhandled instructions|Errors:|Warnings:)" "$root/recomp/recomp.log" || true
+
+# Translate the VU1 microprograms from your own PAL executable into ignored local C++ (issue 012; DW5 025 Step 6; never
+# commit it). Build the translator first: cmake --build app/build --target dbziw_vu1lift. Stops on input or
+# translation errors rather than compiling stale translated code; the file is replaced only when its text changed.
+lifter="${DBZIW_VU1LIFT:-$root/app/build/dbziw_vu1lift}"
+[[ -x "$lifter" || ! -x "$lifter.exe" ]] || lifter="$lifter.exe"
+if [[ ! -x "$lifter" ]]; then
+    echo "VU1 translator missing: $lifter (cmake --build app/build --target dbziw_vu1lift)" >&2
+    exit 1
+fi
+echo "== Translating VU1 microprograms from game/$executable..."
+mkdir -p "$root/recomp/vu1"
+# Writes recomp/vu1/dbziw_vu1_lifted_NN.cpp (only files whose text changed; stale parts removed).
+"$lifter" "$(native_path "$root/game/$executable")" "$(native_path "$root/recomp/vu1")" > "$tmp/vu1lift.log"
+grep -c '^Translating' "$tmp/vu1lift.log" | sed 's/$/ VU1 programs translated/'
+tail -1 "$tmp/vu1lift.log"

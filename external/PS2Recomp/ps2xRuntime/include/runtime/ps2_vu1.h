@@ -98,6 +98,8 @@ public:
                 uint32_t top = 0, uint32_t itop = 0, uint32_t maxCycles = 65536);
 
     VU1State &state() { return m_state; }
+    // The last run() executed translated (native) code, not the interpreter (tests: DW5 036).
+    bool lastRunLifted() const { return m_lastRunLifted; }
     const VU1State &state() const { return m_state; }
 
 private:
@@ -296,6 +298,7 @@ private:
     std::vector<uint8_t> *m_gifCapture = nullptr;
     bool m_verifyShadow = false;
     bool m_liftCanceled = false;
+    bool m_lastRunLifted = false; // the last run() executed translated code (census, DW5 025)
 
     void run(uint8_t *vuCode, uint32_t codeSize,
              uint8_t *vuData, uint32_t dataSize,
@@ -375,6 +378,7 @@ private:
     int32_t readBranchVi(uint8_t reg) const;
     void recordViWriteForBranch(uint8_t reg, int32_t oldValue);
     void reportReservedInstruction(bool upper, uint32_t instruction);
+    void reportInvalidPath1Packet(uint32_t code);
     float broadcast(const float *vf, uint8_t bc);
 };
 

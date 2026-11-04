@@ -55,9 +55,16 @@ add_library(dbziw_setup_core STATIC
     setup/install_state.cpp
     setup/setup_layout.cpp
     setup/setup_pipeline.cpp
+    setup/vu1lift/vu1_timing.cpp
+    setup/vu1lift/vu1_translator.cpp
 )
 target_include_directories(dbziw_setup_core PUBLIC setup)
 target_link_libraries(dbziw_setup_core PUBLIC ffmpeg)
+# VU1 translator (issue 012; DW5 025 Step 6, 5442b4a): dbziw_vu1lift <SLES_553.47> <output.cpp> translates the game's
+# VU1 microprograms; dbziw_vu1lift --find-range <image> <pc> <name> [disc files] prints the vu1_inputs.h entries for
+# a program seen in a PS2X_VU1_CENSUS run.
+add_executable(dbziw_vu1lift setup/vu1lift/vu1lift_main.cpp)
+target_link_libraries(dbziw_vu1lift PRIVATE dbziw_setup_core)
 
 # The wizard's window (raylib + imgui) and no-window run.
 add_library(dbziw_setup_ui STATIC
@@ -229,6 +236,31 @@ if(DBZIW_BUILD_GAME)
         set_target_properties(dbziw PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 64)
         set_source_files_properties(setup/wizard_console.cpp src/dbziw_movies.cpp src/dbziw_rom_profile.cpp
             PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+        # Translated VU1 microprograms (issue 012): written by dbziw_vu1lift (tools/regen.sh, the setup) from the
+        # player's own executable into the ignored recomp/vu1/ folder, several files that compile in parallel. Game-derived: never committed. Without it every
+        # VU1 program is interpreted.
+        file(GLOB DBZIW_VU1_LIFTED_SOURCES CONFIGURE_DEPENDS "${DBZIW_RECOMP_ROOT}/vu1/dbziw_vu1_lifted*.cpp")
+        if(DBZIW_VU1_LIFTED_SOURCES)
+            target_sources(dbziw PRIVATE ${DBZIW_VU1_LIFTED_SOURCES})
+            set_source_files_properties(${DBZIW_VU1_LIFTED_SOURCES} PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON
+                SKIP_PRECOMPILE_HEADERS ON)
+        else()
+            message(STATUS "No translated VU1 code (run tools/regen.sh); VU1 microcode will be interpreted")
+        endif()
+    endif()
+    # DBZIW-TEST vu1_lift (issue 012; DW5 036): every translated VU1 program against the interpreter, on images
+    # rebuilt from the player's executable. Only where translated code exists.
+    if(DBZIW_VU1_LIFTED_SOURCES)
+        set(DBZIW_TEST_ELF "${CMAKE_CURRENT_SOURCE_DIR}/../game/SLES_553.47" CACHE FILEPATH
+            "Player's PAL executable for the vu1_lift test")
+        add_executable(dbziw_vu1_lift_test tests/vu1_lift_test.cpp ${DBZIW_VU1_LIFTED_SOURCES})
+        target_link_libraries(dbziw_vu1_lift_test PRIVATE ps2_runtime dbziw_setup_core)
+        target_include_directories(dbziw_vu1_lift_test PRIVATE "${PS2RECOMP_DIR}/ps2xRuntime/src/lib"
+            "${PS2RECOMP_DIR}/ps2xRuntime/include" "${CMAKE_CURRENT_SOURCE_DIR}")
+        target_compile_options(dbziw_vu1_lift_test PRIVATE ${DBZIW_ARCH_FLAGS} ${DBZIW_STRICT_FP_FLAGS})
+        set_target_properties(dbziw_vu1_lift_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
+        add_test(NAME vu1_lift COMMAND dbziw_vu1_lift_test)
+        set_tests_properties(vu1_lift PROPERTIES ENVIRONMENT "DBZIW_TEST_ELF=${DBZIW_TEST_ELF}" TIMEOUT 300)
     endif()
     # DBZIW-TEST: the PollSema contract under the game's own memory-card write (issue 018): compiles three generated
     # functions, so only where generated code exists, as DW5's version did.

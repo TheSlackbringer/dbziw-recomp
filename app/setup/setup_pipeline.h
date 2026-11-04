@@ -1,6 +1,6 @@
 #pragma once
 // Setup wizard pipeline: from your own disc to a playable game.
-// Steps: check the disc image -> extract -> generate game C++ -> compile.
+// Steps: check the disc image -> extract -> generate game C++ -> translate the VU1 code -> compile.
 // Runs on its own thread; the caller polls status() and may cancel().
 #include "build_game.h"
 #include "disc_setup.h"
@@ -21,6 +21,7 @@ enum class Step
     Check,    // recognise the disc image by file sizes
     Extract,  // copy the files with checksum verification
     Generate, // recompiler: main program
+    LiftVu1,  // VU1 translator: the game's VU1 microprograms (issue 012)
     Build,    // compile and link the game
     Done,
 };
@@ -87,6 +88,7 @@ struct SetupSteps
 {
     using Fn = std::function<bool(const SetupOptions &, StepContext &, std::string &error)>;
     Fn generate;
+    Fn liftVu1;
     std::function<bool(const SetupOptions &, StepContext &, std::filesystem::path &executable, std::string &error)>
         build;
 };

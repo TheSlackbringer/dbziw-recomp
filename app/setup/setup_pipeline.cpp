@@ -1,11 +1,13 @@
 #include "setup_pipeline.h"
 #include "codegen.h"
 #include "install_state.h"
+#include "vu1lift/vu1_translator.h"
 
 #include <algorithm>
 #include <chrono>
 #include <fstream>
 #include <iterator>
+#include <set>
 
 namespace dbziw::setup {
 namespace fs = std::filesystem;
@@ -18,6 +20,23 @@ std::string readText(const fs::path &path)
     std::ifstream in(path, std::ios::binary);
     return {std::istreambuf_iterator<char>(in), {}};
 }
+
+// Writes `text` only if it differs, so an unchanged file does not trigger a recompile (DW5 5442b4a).
+bool writeIfChanged(const fs::path &path, const std::string &text, std::string &error)
+{
+    if (fs::exists(path) && readText(path) == text)
+        return true;
+    std::error_code ec;
+    fs::create_directories(path.parent_path(), ec);
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out << text;
+    if (!out.flush())
+    {
+        error = "cannot write " + path.string();
+        return false;
+    }
+    return true;
+}
 } // namespace
 
 const char *stepName(Step step)
@@ -27,6 +46,7 @@ const char *stepName(Step step)
     case Step::Check: return "Check the disc";
     case Step::Extract: return "Copy the game files";
     case Step::Generate: return "Translate the game code";
+    case Step::LiftVu1: return "Translate the VU1 code";
     case Step::Build: return "Compile the game";
     case Step::Done: return "Done";
     }
@@ -41,6 +61,7 @@ double overallProgress(const std::vector<Step> &plan, Step current, double fract
         case Step::Check: return 1.0;
         case Step::Extract: return 15.0;
         case Step::Generate: return 15.0;
+        case Step::LiftVu1: return 3.0;
         case Step::Build: return 70.0;
         case Step::Done: return 0.0;
         }
@@ -94,6 +115,35 @@ SetupSteps defaultSetupSteps()
             c.log(std::string("recompiling ") + name);
             return !c.cancelled();
         }, error, o.effectiveDataDir());
+    };
+    s.liftVu1 = [](const SetupOptions &o, StepContext &c, std::string &error) {
+        // Issue 012 (DW5 025 Step 6): the VU1 microprograms of the player's own executable, as tools/regen.sh does.
+        std::vector<std::string> parts;
+        if (!vu1lift::generateLiftedVu1(o.effectiveDataDir() / kCodegenProfiles[0].input, parts, error,
+                                        [&](const std::string &line) {
+                c.progress(0.5, line);
+                c.log(line);
+            }, {}, vu1lift::kTargetsPerPart))
+            return false;
+        // One file per part, as tools/regen.sh writes them; parts a smaller program list no longer has are removed.
+        const fs::path dir = o.effectiveDataDir() / "recomp" / "vu1";
+        std::set<std::string> names;
+        for (size_t i = 0; i < parts.size(); ++i)
+        {
+            char name[64];
+            std::snprintf(name, sizeof(name), "dbziw_vu1_lifted_%02zu.cpp", i);
+            names.insert(name);
+            if (!writeIfChanged(dir / name, parts[i], error))
+                return false;
+        }
+        std::error_code ec;
+        for (const auto &entry : fs::directory_iterator(dir, ec))
+        {
+            const std::string name = entry.path().filename().string();
+            if (name.rfind("dbziw_vu1_lifted", 0) == 0 && entry.path().extension() == ".cpp" && !names.count(name))
+                fs::remove(entry.path(), ec);
+        }
+        return true;
     };
     s.build = [](const SetupOptions &o, StepContext &c, fs::path &executable, std::string &error) {
         const auto start = std::chrono::steady_clock::now();
@@ -199,7 +249,7 @@ void SetupRun::run()
         if (!images.empty())
             plan = {Step::Check, Step::Extract};
         if (!m_options.installOnly)
-            plan.insert(plan.end(), {Step::Generate, Step::Build});
+            plan.insert(plan.end(), {Step::Generate, Step::LiftVu1, Step::Build});
         std::lock_guard lock(m_mutex);
         m_status.plan = plan;
     }
@@ -280,7 +330,7 @@ void SetupRun::run()
         ctx.progress(1.0, {});
         return true;
     };
-    if (!runStep(Step::Generate, m_steps.generate))
+    if (!runStep(Step::Generate, m_steps.generate) || !runStep(Step::LiftVu1, m_steps.liftVu1))
         return;
 
     enter(Step::Build);
