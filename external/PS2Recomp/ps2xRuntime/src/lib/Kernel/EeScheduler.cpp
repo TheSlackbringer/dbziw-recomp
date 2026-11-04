@@ -272,10 +272,11 @@ void EeScheduler::run()
         // published (CHCR.STR, D_STAT.CIS) and deliver their DMAC causes, the
         // way a finished transfer raises its interrupt between EE instructions.
         markStallStep(StallStep::DeviceCompletions); // DBZIW-DEBUG (issue 020)
-        if (ps2x::device::pollCompletions(m_runtime.memory()))
-        {
-            m_runtime.drainCompletedDmacHandlers(m_rdram);
-        }
+        // Issue 027: deliver whatever is queued, not only what this poll applied: a D_STAT or channel read in game code
+        // applies finished completions too (drain on observation), and their causes would otherwise wait for the next
+        // completion, a field later (the game flips only with its DMA queues empty: a lost field each time).
+        ps2x::device::pollCompletions(m_runtime.memory());
+        m_runtime.drainCompletedDmacHandlers(m_rdram);
 
         if (m_currentThreadId == 0)
         {

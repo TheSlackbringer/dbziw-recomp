@@ -1045,12 +1045,11 @@ namespace ps2x::device
 
     bool asyncRequestedByEnv() noexcept
     {
-        // DBZIW: Synchronous by default (PS2X_VU1_ASYNC=0) until Issue 011 hardens
-        // async device queue race conditions during boot and logo scene transitions.
+        // On unless PS2X_VU1_ASYNC=0, as in DW5 (issue 027; off from 009 until the late DMAC handlers were fixed).
         if (ps2x::deterministicMode())
             return false; // issue 022: the device worker's completion times follow the PC
         const char *value = std::getenv("PS2X_VU1_ASYNC");
-        return (value && value[0] == '1' && value[1] == '\0');
+        return !(value && value[0] == '0' && value[1] == '\0');
     }
 
     bool traceRequestedByEnv() noexcept
