@@ -100,8 +100,10 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
   not directly involved. Find root causes; no workarounds that paper over symptoms. Survey existing approaches before inventing.
 - **Performance changes must give identical output** (same frames, same sound, exact frame advantage & cancel timing in combat).
   Test at **1x**: every run passes `PS2X_GS_SCALE=1 PS2X_GS_SSAA=1` and you check the `[output] scale=1x` log line.
-  Two runs of the same build may not match in battle today (host-time dependence, issue 022): then record the
-  comparison as pending, never as passed. A speed spec may still close with that comparison pending when byte-level
+  In normal mode two runs of the same build may not match (host time), and a faster build is at a later moment at the
+  same tick: compare fights in the deterministic mode (`PS2X_DETERMINISTIC=1`, issue 022; identical state and frames field
+  by field, translated and interpreted VU1 included). A comparison that cannot run there is recorded as pending, never
+  as passed. A speed spec may still close with that comparison pending when byte-level
   evidence exists (CTests, 0 verifier mismatches, IDENTICAL boot frames), as DW5 did (user, 2026-10-29).
 - **Exact saved-frame comparison (DW5 2026-10-22; ported in 014, 2026-10-31):** Use `tools/debug/compare_frames.py` for renderer/shader,
   VU graphics math, framebuffer/presentation changes, optimizations/refactors in those paths, and visual-regression
@@ -214,13 +216,16 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
   - `ps2xRecomp/` — the recompiler `ps2_recomp` (VU0 macro ops: `src/lib/vu_translator.cpp`).
 - `recomp/` — recompiler configuration (`dbz_iw.toml`: entry point `0x100008`, stubs, `[mmio]` map, jump tables,
   `[patches]`), `ghidra_functions.csv` (symbol boundaries across `0x100000`–`0x49C600`), and `recomp/output/`
-  (generated C++, gitignored; `tools/regen.sh`). VU translator `app/setup/vu1lift/` and `recomp/vu1/` *(planned: 012)*.
+  (generated C++, gitignored; `tools/regen.sh`), and `recomp/vu1/` (translated VU1 programs,
+  `dbziw_vu1_lifted_NN.cpp`, gitignored, written by `dbziw_vu1lift`).
 - `app/` — the game target (built from generated code + the runtime's `main.cpp`) and the native setup pipeline:
   - `setup/` — first-launch setup wizard (`disc_setup`, `setup_pipeline`, `wizard_ui`, `wizard_console`,
-    `build_game`, `install_state`, `codegen`).
+    `build_game`, `install_state`, `codegen`) and `setup/vu1lift/`, the VU1 translator (`dbziw_vu1lift`, DW5's C++
+    translator; `vu1_inputs.h` holds offsets and SHA-256 only, built by `port/make_inputs.py` in 012's notes).
   - `cmake/DbziwPlatform.cmake` — platform options and Windows DLL staging.
   - tests in `app/tests/` (CTest: `setup_disc`, 020's movie tests, 018's runtime tests from DW5's fork;
-    `ee_poll_sema` only with generated code).
+    `ee_poll_sema` and `vu1_lift` only with generated code; `vu1_lift`: every translated VU1 program against the
+    interpreter).
   - `src/` — `dbziw_movies.cpp` (the libmpeg replacement for Sofdec, 020) and `dbziw_movie_input.*`; no game
     overrides yet, no pad bridge (DBZIW uses the libpad HLE; 021).
 - `tools/` — `regen.sh`, `audit_stubs.py`, `diff_frames.py`, `fix_ghidra_csv.py`, `make_checkpoint.py`,
@@ -283,9 +288,14 @@ Diagnostics/pacing: `PS2X_STALL_WATCHDOG=3` · `PS2X_CRASH_HANDLER=1` · `PS2X_S
 `PS2X_HUD_LOG` ([hud] fps/vsync/frameMs/maxFrameMs every 0.5 s) · `PS2X_LATE_VBLANK` (fields >3 ms late) ·
 `PS2X_VU1_ASYNC_TRACE` (device worker busy/drains per second; "explicit=N" render syncs = 2 x game FPS) ·
 `PS2X_DEVICE_PROFILE=1` with the async trace (device time split) ·
-`PS2X_VU1_CENSUS=<file>` (per-VU1-program runs/cycles/host ns) · `PS2X_VU1_LIFT=0` (interpret all VU1) ·
+`PS2X_VU1_CENSUS=<file>` (per image and entry or resume pc: runs, resumes, cycles, host ns, translated runs and host ns) · `PS2X_VU1_LIFT=0` (interpret all VU1) ·
 `PS2X_VU1_LIFT_VERIFY=1` (every native VU1 run repeated by the interpreter; slow) · `PS2X_VU1_RUN_CAPTURE=<prefix>` ·
-`PS2X_VU1_ASYNC=0` (synchronous device) · `PS2X_GS_ASYNC=0` (GS inline, no worker thread) · `PS2X_HOST_FPS` ·
+`PS2X_VU1_ASYNC=0` (no device worker; on by default since 027) · `PS2X_GS_ASYNC=0` (GS inline, no worker thread) ·
+`PS2X_HOST_FPS` · `PS2X_DETERMINISTIC=1` (022, tests and replays: guest time from EE cycles only: fields and idle waits,
+the IOP on EE cycles / 8, GS and device workers off, one fixed host date, scripted input only, frames saved on the game's
+thread at field start; a slow PC runs the game slower than real time; normal play never sets it) ·
+`PS2X_STATE_HASH=<file>` (022: one line per field: EE cycle, field-clock jump, hashes of EE RAM, scratchpad, VU memory and
+IOP RAM, IOP cycles; slow, never in timing runs) · `PS2X_STATE_HASH_DUMP=t1,t2` (EE RAM at those hashed moments) ·
 `PS2X_LOAD_STATE=<file>` / `PS2X_DUMP_STATE=<file>` / `PS2X_DUMP_STATE_TICK=<n>` (checkpoints; full fidelity: 016) ·
 `PS2X_CTRL=<file>` (dev command file) · `PS2X_THREADS_AT_EXIT=1` (EE threads, semaphores and event flags at the exit
 tick) · `PS2X_MC_ROOT=<dir>` (memory card slot 1 folder, slot 2 beside it; tests) · `PS2X_KERNEL_TRACE=1` (FlushCache
@@ -302,11 +312,10 @@ Other: `PS2X_MPG_TRACE` · `PS2X_VIF1_CHAIN_TRACE` · `PS2X_RAM_DUMP_TICKS=t1,t2
 `PS2X_DUMP_FROM=<a>` / `PS2X_DUMP_TO=<b>` (with `PS2X_DUMP_EVERY`: frame dumps only for ticks in [a, b]) ·
 `PS2X_PROFILE_MARKERS=<file>` (+ `_CAPACITY`; only in the diagnostic build `app/build-diagnostics`,
 `-DDBZIW_DEVELOPER_DIAGNOSTICS=ON`, 010).
-*Planned (not in the code yet):* `PS2X_VU0_LIFT`/`_VERIFY`/`PS2X_VU0_CENSUS` (012, only if VU0 microprograms run) ·
-`PS2X_PRESENT_STATS`, `PS2X_FIELD_SCANOUT=0`, `PS2X_WEAVE_TRACE` (013) · `PS2X_STATE_RESAVE=<file>` (016) ·
+*Planned (not in the code yet):* `PS2X_PRESENT_STATS`, `PS2X_FIELD_SCANOUT=0`, `PS2X_WEAVE_TRACE` (013) · `PS2X_STATE_RESAVE=<file>` (016) ·
 `PS2X_SETTINGS_FILE` (028) ·
 CRI/Sofdec/IPU traces (020) ·
-`PS2X_PAD_TRACE` (021) · `PS2X_STATE_HASH=<file>` (022).
+`PS2X_PAD_TRACE` (021).
 Profiling: `perf` and `gprofng` are installed on the Linux test machine. The non-pausing toolkit is
 `tools/profile/` (010, `CONTRACT.md`: `capture.py`, `report.py`, `analyze_capture.py`; the diagnostic build's configure
 command is there); one profiled game route: `notes/issues/tests/profile_capture_010.py --route boot|battle`. The
@@ -408,9 +417,14 @@ renderer fixes are runtime patches in `vendor/parallel-gs-patches/`.
   culling/visibility looks wrong on the EE side, compare the op with the VU1 version (DW5 VCLIP bug; DW5 017 flags,
   020 `BC2F`/`BC2T`). DBZIW uses VU0 macro mode heavily.
 - **IOP RPC server functions run outside any IOP thread;** blocking waits there need the host-wait pump (DW5 004).
-- **IOP time follows the host clock** (`iop_emulator.cpp` catch-up), so two runs of the same build can diverge (issue 022).
-- **The async device worker is off by default** since 009 (`PS2X_VU1_ASYNC=0`, also forced in `run.py`) after a freeze
-  in the bound `sceGsSyncPath`; DW5's speed relies on it being on (issue 027).
+- **IOP time follows the host clock** in normal mode (`iop_emulator.cpp` catch-up), as the field clock does, so two runs of
+  the same build can diverge; `PS2X_DETERMINISTIC=1` removes every such input (issue 022).
+- **The device worker runs VU1, VIF1 and GIF on its own thread by default** (027, as DW5). The game flips only with its DMA
+  queues empty, so a late DMA-end interrupt costs a whole field: completions applied by a D_STAT read in game code must
+  still be delivered at once (the dispatcher delivers whatever is queued on every pass).
+- **Every VU1 program on the disc is translated** (012): `port/static_targets.py` scans `SLES_553.47` for MPG blocks (256
+  programs; no census needed; the data archives hold none). DBZIW starts no VU0 microprograms, so there is no VU0 lift.
+  A `[vu1lift:miss]` line means a program the scan did not find: add it with `dbziw_vu1lift --find-range`.
 - **Never measure stutter with frame dumps on** (PNG dumps cause 40 ms hitches and can hide timing races); the
   overlay/`[hud]` VSync figure reads 48–51 by aliasing even when pacing is perfect — use late fields and game FPS.
 - **Lifted VU1 code must stay cycle-exact** with the interpreter (Q/flag/XGKICK timing is observable by the game).
