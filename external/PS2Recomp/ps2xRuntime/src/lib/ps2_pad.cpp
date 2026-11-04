@@ -233,13 +233,15 @@ namespace ps2_host_input
             return focused && (gScripted ? scriptedDown(name, vsyncTick) : (IsWindowReady() && IsKeyDown(code)));
         };
         auto bind = [&](bool down, uint16_t mask) { if (down) pressed |= mask; };
-        bind(key(KEY_UP, "UP") || key(KEY_W, "W"), PAD_UP);
-        bind(key(KEY_DOWN, "DOWN") || key(KEY_S, "S"), PAD_DOWN);
+        bind(key(KEY_UP, "UP"), PAD_UP);
+        bind(key(KEY_DOWN, "DOWN"), PAD_DOWN);
         bind(key(KEY_LEFT, "LEFT"), PAD_LEFT);
         bind(key(KEY_RIGHT, "RIGHT"), PAD_RIGHT);
         bind(key(KEY_ENTER, "ENTER") || key(KEY_ENTER, "START"), PAD_START);
         if (verdite)
         {
+            bind(key(KEY_W, "W"), PAD_UP);
+            bind(key(KEY_S, "S"), PAD_DOWN);
             bind(key(KEY_A, "A"), PAD_L1);
             bind(key(KEY_D, "D"), PAD_R1);
             bind(key(KEY_SPACE, "SPACE"), PAD_SQUARE);
@@ -250,8 +252,6 @@ namespace ps2_host_input
         }
         else
         {
-            bind(key(KEY_A, "A"), PAD_LEFT);
-            bind(key(KEY_D, "D"), PAD_RIGHT);
             bind(key(KEY_X, "X") || key(KEY_SPACE, "SPACE") || key(KEY_X, "CROSS"), PAD_CROSS);
             bind(key(KEY_C, "C") || key(KEY_ESCAPE, "ESCAPE") || key(KEY_C, "CIRCLE"), PAD_CIRCLE);
             bind(key(KEY_Z, "Z") || key(KEY_KP_0, "KP0") || key(KEY_Z, "SQUARE"), PAD_SQUARE);
@@ -286,6 +286,14 @@ namespace ps2_host_input
             sticks[1] = stickByte(GetGamepadAxisMovement(gamepad, GAMEPAD_AXIS_RIGHT_Y));
             sticks[2] = stickByte(GetGamepadAxisMovement(gamepad, GAMEPAD_AXIS_LEFT_X));
             sticks[3] = stickByte(GetGamepadAxisMovement(gamepad, GAMEPAD_AXIS_LEFT_Y));
+        }
+        if (!verdite)
+        {
+            // DBZIW 038: W/A/S/D are the left stick, as on a real pad (free flight ignores the D-pad; the arrows are the D-pad).
+            const int stickX = (key(KEY_D, "D") ? 1 : 0) - (key(KEY_A, "A") ? 1 : 0);
+            const int stickY = (key(KEY_S, "S") ? 1 : 0) - (key(KEY_W, "W") ? 1 : 0);
+            if (stickX != 0) sticks[2] = stickByte(static_cast<float>(stickX));
+            if (stickY != 0) sticks[3] = stickByte(static_cast<float>(stickY));
         }
 
         std::array<bool, 3> mouse{};

@@ -129,6 +129,8 @@ foreach(name vu_minmax vif_unpack_fast vif_unpack_boundary ee_shared_vu0 cd_iop_
     dbziw_runtime_test(${name})
 endforeach()
 dbziw_runtime_test(rom_profile src/dbziw_rom_profile.cpp) # DBZIW 037
+dbziw_runtime_test(keyboard_stick) # DBZIW 038
+set_tests_properties(keyboard_stick PROPERTIES ENVIRONMENT "PS2X_HOST_INPUT=100:W:1,200:S:1,300:A:1,400:D:1,500:W:1,500:A:1,600:W:1,600:S:1,700:A:1,700:D:1,800:UP:1,900:DOWN:1,1000:LEFT:1,1100:RIGHT:1,1200:W:1,1200:DOWN:1")
 # DBZIW 011: DW5 025's guards for the runtime speed fixes (A, B, C2, C3a, C3b, D) and DW5 023 7T.
 foreach(name dma_chain_snapshot vu1_xgkick_tail gif_arbiter_order)
     dbziw_runtime_test(${name})
