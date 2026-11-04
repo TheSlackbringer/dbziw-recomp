@@ -1,3 +1,4 @@
+#include "runtime/ps2_deterministic.h"
 #include "ps2_iop_host.h"
 
 #include "ps2_runtime.h"
@@ -276,6 +277,9 @@ void PS2IopHostAdapter::audioSamples(std::span<const int16_t> stereo48k)
 
 std::optional<uint64_t> PS2IopHostAdapter::monotonicNanoseconds() const noexcept
 {
+    // Issue 022: no host clock in the deterministic mode, so the IOP runs on EE cycles / 8 (IopEmulator::runEeCycles).
+    if (ps2x::deterministicMode())
+        return std::nullopt;
     const auto now = std::chrono::steady_clock::now().time_since_epoch();
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
 }

@@ -1,3 +1,4 @@
+#include "runtime/ps2_deterministic.h"
 #include "Common.h"
 #include "CD.h"
 #include "MPEG.h"
@@ -549,6 +550,8 @@ namespace ps2_stubs
         }
 
         std::time_t now = std::time(nullptr);
+        if (ps2x::deterministicMode())
+            now = ps2x::kDeterministicDate; // issue 022: the save date is one fixed date in the deterministic mode
         std::tm localTm{};
 #ifdef _WIN32
         localtime_s(&localTm, &now);

@@ -1,3 +1,4 @@
+#include "runtime/ps2_deterministic.h"
 #include "ps2_runtime.h"
 #include "ps2_log.h"
 #include "ps2_stubs.h"
@@ -565,6 +566,37 @@ namespace ps2x_dev
         return ok;
     }
 
+    // Issue 022: in the deterministic mode the game's thread latches the picture at each field start (the GS runs
+    // inline there) and writes the scheduled PS2X_DUMP_EVERY frames itself, so a dump shows the display of exactly
+    // that field. The presentation thread's own latch and dump would catch a PC-timed moment.
+    static std::string dumpDir();
+    void deterministicField(PS2Runtime &rt, uint64_t tick)
+    {
+        rt.gs().latchHostPresentationFrame();
+        static const uint64_t every = envU64("PS2X_DUMP_EVERY", 0u);
+        static const uint64_t from = envU64("PS2X_DUMP_FROM", 0u);
+        static const uint64_t to = envU64("PS2X_DUMP_TO", std::numeric_limits<uint64_t>::max());
+        if (every == 0u || tick < from || tick > to || tick % every != 0u)
+            return;
+        std::vector<uint8_t> px;
+        uint32_t width = 0u, height = 0u;
+        if (!rt.gs().copyLatchedHostPresentationFrame(px, width, height) || px.empty())
+            return;
+        for (size_t i = 3; i < px.size(); i += 4)
+            px[i] = 0xFF;
+        Image img{};
+        img.data = px.data();
+        img.width = static_cast<int>(width);
+        img.height = static_cast<int>(height);
+        img.mipmaps = 1;
+        img.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+        char name[64];
+        std::snprintf(name, sizeof(name), "/frame_%06llu.png", static_cast<unsigned long long>(tick));
+        const std::string path = dumpDir() + name;
+        const bool ok = ExportImage(img, path.c_str());
+        std::cerr << "[dev] shot " << path << (ok ? " ok" : " FAILED") << " (deterministic, field start)" << std::endl;
+    }
+
     static std::string dumpDir()
     {
         const char *d = std::getenv("PS2X_DUMP_DIR");
@@ -930,11 +962,12 @@ namespace ps2x_dev
             GSTrace::onTick(tick);
             stepRamDebug(tick);
             pollCtrl(tick);
-            stepInput(tick);
+            if (!ps2x::deterministicMode()) // issue 022: there only the game's thread steps the script (field start)
+                stepInput(tick);
             stepBurst(tick);
             stepAudioAnchor(tick);
 
-            if (dumpEvery != 0u && tick >= dumpFrom && tick <= dumpTo)
+            if (dumpEvery != 0u && tick >= dumpFrom && tick <= dumpTo && !ps2x::deterministicMode())
             {
                 const uint64_t bucket = tick / dumpEvery;
                 if (bucket != lastDumpBucket)
@@ -1159,7 +1192,9 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
     static bool s_hasUploadedFrame = false;
 
     const uint64_t currentTick = rt->eeScheduler().currentVSyncTick();
-    const bool needsLatch = !s_hasLatchedInitialFrame || currentTick != s_lastPresentationTick;
+    // Issue 022: in the deterministic mode the game's thread latches at each field start (deterministicField).
+    const bool needsLatch = !ps2x::deterministicMode() &&
+                            (!s_hasLatchedInitialFrame || currentTick != s_lastPresentationTick);
     if (needsLatch)
     {
         rt->gs().latchHostPresentationFrame();

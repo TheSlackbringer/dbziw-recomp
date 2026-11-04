@@ -1,5 +1,6 @@
 #include <atomic>
 #include <cstdio>
+#include "runtime/ps2_deterministic.h"
 #include "runtime/ee_scheduler.h"
 #include "runtime/ps2_symbols.h"
 
@@ -579,7 +580,9 @@ bool EeScheduler::checkpointDue(uint32_t cycles) noexcept
         return true;
     }
 
-    if (++g_fieldClockPoll >= kFieldClockPollInterval)
+    // Issue 022: the deterministic mode takes no checkpoint at a wall-clock moment (fields start at their guest cycle,
+    // which the cycle test above already catches).
+    if (!ps2x::deterministicMode() && ++g_fieldClockPoll >= kFieldClockPollInterval)
     {
         g_fieldClockPoll = 0u;
         const int64_t fieldDeadline = g_nextFieldHostDeadlineNs.load(std::memory_order_acquire);
@@ -2090,6 +2093,86 @@ void EeScheduler::processPendingEvents()
 // tools/heavy_battle_test.py), with the time since the previous deadline service.
 static std::chrono::steady_clock::time_point g_lastDeadlineService{};
 static std::chrono::steady_clock::time_point g_prevDeadlineService{};
+
+// DBZIW-DEBUG issue 022: PS2X_STATE_HASH=<file> writes one line per field at VBlank start: the field (tick), the EE
+// cycle, how many EE cycles the field clock jumped since the previous field because the wall-clock field time came
+// first (processDueDeadlines), and 64-bit hashes of EE RAM, scratchpad and VU0/VU1 code and data. Two runs are
+// compared line by line (notes/issues/tests/issue_022_determinism.py). Also (M2) the running EE thread, the IOP's cycle
+// and instruction counts and a hash of IOP RAM. Diagnostic: hashing 32 MB per field costs
+// about a millisecond, so never on in timing runs.
+static uint64_t g_dbziwFieldJumpCycles = 0u;
+
+namespace
+{
+    uint64_t stateHash(const uint8_t *data, size_t size)
+    {
+        if (!data)
+            return 0u;
+        uint64_t lane[4] = {0x9E3779B97F4A7C15ull, 0xC2B2AE3D27D4EB4Full, 0x165667B19E3779F9ull, 0x27D4EB2F165667C5ull};
+        size_t i = 0;
+        for (; i + 32u <= size; i += 32u)
+            for (int k = 0; k < 4; ++k)
+            {
+                uint64_t w;
+                std::memcpy(&w, data + i + 8u * k, sizeof(w));
+                lane[k] = (lane[k] ^ w) * 0x100000001B3ull;
+                lane[k] ^= lane[k] >> 29;
+            }
+        for (; i < size; ++i)
+            lane[0] = (lane[0] ^ data[i]) * 0x100000001B3ull;
+        return lane[0] ^ (lane[1] * 3u) ^ (lane[2] * 5u) ^ (lane[3] * 7u);
+    }
+}
+
+void EeScheduler::writeStateHash()
+{
+    static FILE *const out = []() -> FILE * {
+        const char *path = std::getenv("PS2X_STATE_HASH");
+        FILE *f = path && *path ? std::fopen(path, "w") : nullptr;
+        if (f)
+            std::fprintf(f, "# tick eeCycle jumpCycles ram scratchpad vu0code vu0data vu1code vu1data thread "
+                            "iopCycles iopInstructions iopRam\n");
+        return f;
+    }();
+    if (!out)
+        return;
+    PS2Memory &mem = m_runtime.memory();
+    std::fprintf(out, "%llu %llu %llu %016llx %016llx %016llx %016llx %016llx %016llx",
+                 (unsigned long long)m_vsyncTick, (unsigned long long)m_eeCycle,
+                 (unsigned long long)g_dbziwFieldJumpCycles,
+                 (unsigned long long)stateHash(mem.getRDRAM(), PS2_RAM_SIZE),
+                 (unsigned long long)stateHash(mem.getScratchpad(), PS2_SCRATCHPAD_SIZE),
+                 (unsigned long long)stateHash(mem.getVU0Code(), PS2_VU0_CODE_SIZE),
+                 (unsigned long long)stateHash(mem.getVU0Data(), PS2_VU0_DATA_SIZE),
+                 (unsigned long long)stateHash(mem.getVU1Code(), PS2_VU1_CODE_SIZE),
+                 (unsigned long long)stateHash(mem.getVU1Data(), PS2_VU1_DATA_SIZE));
+    // The IOP side (M2): its own clock, and its 2 MB of RAM as the EE could read it.
+    static std::vector<uint8_t> iopRam(2u * 1024u * 1024u);
+    const ps2x::iop::DebugSnapshot iop = m_runtime.iopDebugSnapshot();
+    const bool iopRead = m_runtime.readIopMemory(0u, iopRam.data(), iopRam.size());
+    std::fprintf(out, " %d %llu %llu %016llx\n", m_currentThreadId, (unsigned long long)iop.emulatorCycles,
+                 (unsigned long long)iop.emulatorInstructions,
+                 (unsigned long long)(iopRead ? stateHash(iopRam.data(), iopRam.size()) : 0u));
+    std::fflush(out);
+    g_dbziwFieldJumpCycles = 0u;
+    // DBZIW-DEBUG issue 022: PS2X_STATE_HASH_DUMP=t1,t2 saves EE RAM at the hashed moment of those fields as
+    // <PS2X_STATE_HASH>.<tick>.ram (game data: stays in tests/out), to see which bytes two runs differ in.
+    static const std::string s_dumpTicks = [] { const char *v = std::getenv("PS2X_STATE_HASH_DUMP"); return std::string(v ? v : ""); }();
+    if (!s_dumpTicks.empty())
+    {
+        const std::string me = "," + std::to_string(m_vsyncTick) + ",";
+        if (("," + s_dumpTicks + ",").find(me) != std::string::npos)
+        {
+            const std::string path = std::string(std::getenv("PS2X_STATE_HASH")) + "." + std::to_string(m_vsyncTick) + ".ram";
+            if (FILE *f = std::fopen(path.c_str(), "wb"))
+            {
+                std::fwrite(mem.getRDRAM(), 1, PS2_RAM_SIZE, f);
+                std::fclose(f);
+            }
+        }
+    }
+}
+
 void EeScheduler::processDueDeadlines()
 {
     g_prevDeadlineService = g_lastDeadlineService;
@@ -2111,7 +2194,8 @@ void EeScheduler::processDueDeadlines()
                     pacedHardwareCycle = std::min(pacedHardwareCycle, item.deadlineCycle);
                 }
             }
-            if (pacedHardwareCycle != std::numeric_limits<uint64_t>::max() &&
+            // Issue 022: in the deterministic mode fields start at their guest cycle only, never at the wall time.
+            if (!ps2x::deterministicMode() && pacedHardwareCycle != std::numeric_limits<uint64_t>::max() &&
                 pacedHardwareCycle > m_eeCycle)
             {
                 // Native SDK replacements omit the instruction loops which
@@ -2121,6 +2205,7 @@ void EeScheduler::processDueDeadlines()
                 // the same timer/IOP accounting used by idle deadline waits.
                 // Retain the existing emission gates and exact field offsets.
                 uint64_t remaining = pacedHardwareCycle - m_eeCycle;
+                g_dbziwFieldJumpCycles += remaining; // DBZIW-DEBUG issue 022 (PS2X_STATE_HASH)
                 lock.unlock();
                 while (remaining > 0u)
                 {
@@ -2131,11 +2216,14 @@ void EeScheduler::processDueDeadlines()
                 }
                 continue;
             }
+            // Issue 022: the deterministic mode waits for the latest wall time among the cycle-due events and then
+            // takes exactly the cycle-due set, so which events run, and in which order, follows guest cycles only.
+            const bool deterministic = ps2x::deterministicMode();
             for (const ScheduledEvent &item : m_deadlines)
             {
                 if (item.deadlineCycle <= m_eeCycle &&
                     (pacingDeadline == std::chrono::steady_clock::time_point{} ||
-                     item.hostDeadline < pacingDeadline))
+                     (deterministic ? item.hostDeadline > pacingDeadline : item.hostDeadline < pacingDeadline)))
                 {
                     pacingDeadline = item.hostDeadline;
                 }
@@ -2163,9 +2251,9 @@ void EeScheduler::processDueDeadlines()
 
             const auto pacedNow = std::chrono::steady_clock::now();
             auto firstFuture = std::partition(m_deadlines.begin(), m_deadlines.end(),
-                                              [this, pacedNow](const ScheduledEvent &item)
+                                              [this, pacedNow, deterministic](const ScheduledEvent &item)
                                               { return item.deadlineCycle <= m_eeCycle &&
-                                                       item.hostDeadline <= pacedNow; });
+                                                       (deterministic || item.hostDeadline <= pacedNow); });
             due.insert(due.end(),
                        std::make_move_iterator(m_deadlines.begin()),
                        std::make_move_iterator(firstFuture));
@@ -2233,6 +2321,7 @@ extern std::atomic<uint32_t> g_dbziwMpegDemux, g_dbziwMpegGetPic, g_dbziwMpegPic
 namespace ps2x_dev
 {
     void stepInput(uint64_t tick);
+    void deterministicField(PS2Runtime &rt, uint64_t tick); // issue 022
 }
 
 void EeScheduler::processEvent(const EeEvent &event)
@@ -2245,8 +2334,14 @@ void EeScheduler::processEvent(const EeEvent &event)
         break;
     case EeEventType::VBlankStart:
         ++m_vsyncTick;
+        if (m_vsyncTick == 1u && ps2x::deterministicMode()) // issue 022: name the mode in every log
+            std::fprintf(stderr, "[deterministic] on: fields, IOP and idle waits on guest cycles; GS inline; "
+                                 "device worker off; host dates fixed\n");
+        writeStateHash(); // DBZIW-DEBUG issue 022: PS2X_STATE_HASH, the state as the field starts
         ps2prof::record(ps2prof::Event::FieldStart, m_vsyncTick, palVideoMode() ? 50u : 60u); // DBZIW-DEBUG issue 010
         ps2x_dev::stepInput(m_vsyncTick);
+        if (ps2x::deterministicMode())
+            ps2x_dev::deterministicField(m_runtime, m_vsyncTick);
         m_runtime.memory().vsyncTickNs().store(std::chrono::steady_clock::now().time_since_epoch().count(),
                                                   std::memory_order_relaxed);
         m_runtime.memory().gs().vsyncTick.store(m_vsyncTick, std::memory_order_release);
@@ -2455,7 +2550,9 @@ void EeScheduler::waitForEvent()
     if (hasTimerDeadline)
     {
         const auto timerHostDeadline = std::chrono::steady_clock::now() + eeCyclesToHostDuration(timerCycles);
-        if (timerHostDeadline < hostDeadline)
+        // Issue 022: the deterministic mode picks the earlier deadline by guest cycles, not by PC time.
+        if (ps2x::deterministicMode() ? (m_deadlines.empty() || m_eeCycle + timerCycles < deadlineCycle)
+                                      : timerHostDeadline < hostDeadline)
         {
             deadlineCycle = m_eeCycle + timerCycles;
             hostDeadline = timerHostDeadline;

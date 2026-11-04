@@ -1,3 +1,4 @@
+#include "runtime/ps2_deterministic.h"
 #include "runtime/gs/ps2_gif_arbiter.h"
 #include "runtime/ps2_profile_markers.h"
 #include "ThreadNaming.h"
@@ -37,6 +38,8 @@ void GifArbiter::setProcessPacketFn(ProcessPacketFn fn)
 
 bool GifArbiter::workerRequestedByEnv()
 {
+    if (ps2x::deterministicMode())
+        return false; // issue 022: the GS worker's completion times follow the PC
     const char *value = std::getenv("PS2X_GS_ASYNC");
     return !(value && value[0] == '0' && value[1] == '\0');
 }

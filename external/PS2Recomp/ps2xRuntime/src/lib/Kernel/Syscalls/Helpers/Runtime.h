@@ -1,3 +1,5 @@
+#include "runtime/ps2_deterministic.h"
+
 static void setRegU32(R5900Context *ctx, int reg, uint32_t value)
 {
     if (!ctx || reg < 0 || reg > 31)
@@ -175,6 +177,9 @@ static void encodePs2Time(std::time_t t, uint8_t out[8])
 
 static std::time_t fileTimeToTimeT(std::filesystem::file_time_type ft)
 {
+    // Issue 022: one fixed date in the deterministic mode (the scratch card is created at a new time each run).
+    if (ps2x::deterministicMode())
+        return ps2x::kDeterministicDate;
     auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
         ft - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now());
     return std::chrono::system_clock::to_time_t(sctp);

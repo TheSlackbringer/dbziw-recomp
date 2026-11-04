@@ -1,3 +1,4 @@
+#include "runtime/ps2_deterministic.h"
 #include "runtime/ps2_pad.h"
 #include "runtime/host_input.h"
 #include "ps2_host_backend.h"
@@ -415,7 +416,15 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
     std::memset(data, 0, 32);
     data[0] = 0x01;
     data[1] = 0x73;
-    uint16_t pressed;
+    uint16_t pressed = 0u;
+    if (ps2x::deterministicMode())
+    {
+        // Issue 022: only the script, stepped on the game's thread at each field start (g_padPressedMask). The state
+        // poll() builds on the presentation thread changes at PC-timed moments, so it is not read in this mode
+        // (live keyboard and gamepad input are not used either).
+        std::memset(data + 4, 128, 4);
+    }
+    else
     {
         std::lock_guard<std::mutex> lock(gMutex);
         pressed = gState.pressed;

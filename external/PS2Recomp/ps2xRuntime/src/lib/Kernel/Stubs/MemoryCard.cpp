@@ -1,3 +1,4 @@
+#include "runtime/ps2_deterministic.h"
 #include "Common.h"
 #include "MemoryCard.h"
 
@@ -263,6 +264,9 @@ namespace ps2_stubs
 
         std::time_t fileTimeToTimeTMc(std::filesystem::file_time_type value)
         {
+            // Issue 022: one fixed date in the deterministic mode (the scratch card is created at a new time each run).
+            if (ps2x::deterministicMode())
+                return ps2x::kDeterministicDate;
             const auto systemTime = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
                 value - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now());
             return std::chrono::system_clock::to_time_t(systemTime);
@@ -775,7 +779,8 @@ namespace ps2_stubs
                     if (std::filesystem::exists(hostDir, ec) && !ec &&
                         std::filesystem::is_directory(hostDir, ec))
                     {
-                        const std::time_t now = std::time(nullptr);
+                        // Issue 022: the "." and ".." entries carry the fixed date in the deterministic mode.
+                        const std::time_t now = ps2x::deterministicMode() ? ps2x::kDeterministicDate : std::time(nullptr);
                         auto appendSpecial = [&](const std::string &name)
                         {
                             if (!wildcardMatch(pattern, name))

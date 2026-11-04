@@ -1,3 +1,5 @@
+#include "runtime/ps2_deterministic.h"
+
 #include "runtime/ps2_vfs.h"
 
 #include "runtime/ps2_memory.h"
@@ -147,6 +149,9 @@ namespace
 
     std::time_t toTimeT(std::filesystem::file_time_type value)
     {
+        // Issue 022: one fixed date in the deterministic mode (the scratch card is created at a new time each run).
+        if (ps2x::deterministicMode())
+            return ps2x::kDeterministicDate;
         const auto systemValue = std::chrono::time_point_cast<std::chrono::system_clock::duration>(value - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now());
         return std::chrono::system_clock::to_time_t(systemValue);
     }
