@@ -33,7 +33,10 @@ jobs:
         run: python3 -m unittest discover -s tools/release -p 'test_*.py' -v
       - name: No game data in the repository
         run: |
-          bad=$(git ls-files | grep -iE '^(game|discs|ghidra|ghidra_iop|notes)/|/output/|^recomp/(vu0|vu1|iop)/|vu[01]_lifted|\.(iso|elf|irx)$' || true)
+          git config --global --add safe.directory "$PWD"
+          tracked=$(git ls-files)
+          if [ -z "$tracked" ]; then echo "git ls-files listed nothing, so nothing was checked"; exit 1; fi
+          bad=$(printf '%s\n' "$tracked" | grep -iE '^(game|discs|ghidra|ghidra_iop|notes)/|/output/|^recomp/(vu0|vu1|iop)/|vu[01]_lifted|\.(iso|elf|irx)$' || true)
           if [ -n "$bad" ]; then echo "game-derived or local files are tracked:"; echo "$bad"; exit 1; fi
       - name: paraLLEl-GS (pinned) with the renderer patches
         run: |

@@ -287,10 +287,15 @@ void register_ps2_sif_rpc_tests()
             SifSetRpcQueue(env.rdram.data(), &env.ctx, &env.runtime);
             t.Equals(getRegS32(env.ctx, 2), KE_OK, "SifSetRpcQueue should succeed");
 
+            // DBZIW 037 (app/tests/sif_register_rpc_test.cpp): the fifth to seventh arguments come from t0..t2; the
+            // stack holds other values, so a stack read shows.
             setRegU32(env.ctx, 29, K_STACK_ADDR);
-            writeGuestU32(env.rdram.data(), K_STACK_ADDR + 0x10u, 0x9000u);          // cfunc
-            writeGuestU32(env.rdram.data(), K_STACK_ADDR + 0x14u, kClientCbufAddr);  // cbuf
-            writeGuestU32(env.rdram.data(), K_STACK_ADDR + 0x18u, kQdAddr);          // qd
+            writeGuestU32(env.rdram.data(), K_STACK_ADDR + 0x10u, 0xDEAD0010u);
+            writeGuestU32(env.rdram.data(), K_STACK_ADDR + 0x14u, 0xDEAD0014u);
+            writeGuestU32(env.rdram.data(), K_STACK_ADDR + 0x18u, 0xDEAD0018u);
+            setRegU32(env.ctx, 8, 0x9000u);          // t0: cfunc
+            setRegU32(env.ctx, 9, kClientCbufAddr);  // t1: cbuf
+            setRegU32(env.ctx, 10, kQdAddr);         // t2: qd
 
             setRegU32(env.ctx, 4, kSdAddr);
             setRegU32(env.ctx, 5, kSid);
@@ -304,7 +309,7 @@ void register_ps2_sif_rpc_tests()
             t.Equals(qdAfterRegister.link, kSdAddr, "queue link should point at registered server");
             t.Equals(static_cast<uint32_t>(sdAfterRegister.sid), kSid, "server sid should match registered sid");
             t.Equals(sdAfterRegister.buf, kServerBufAddr, "server buf should match register arg");
-            t.Equals(sdAfterRegister.cbuf, kClientCbufAddr, "server cbuf should match stack arg");
+            t.Equals(sdAfterRegister.cbuf, kClientCbufAddr, "server cbuf should match the t1 arg");
             t.Equals(sdAfterRegister.base, kQdAddr, "server base should point to queue");
 
             setRegU32(env.ctx, 4, kClientAddr);
@@ -506,10 +511,15 @@ void register_ps2_sif_rpc_tests()
             SifSetRpcQueue(env.rdram.data(), &env.ctx, &env.runtime);
             t.Equals(getRegS32(env.ctx, 2), KE_OK, "SifSetRpcQueue should succeed");
 
+            // DBZIW 037 (app/tests/sif_register_rpc_test.cpp): the fifth to seventh arguments come from t0..t2; the
+            // stack holds other values, so a stack read shows.
             setRegU32(env.ctx, 29, K_STACK_ADDR);
-            writeGuestU32(env.rdram.data(), K_STACK_ADDR + 0x10u, 0u);
-            writeGuestU32(env.rdram.data(), K_STACK_ADDR + 0x14u, kServerCbufAddr);
-            writeGuestU32(env.rdram.data(), K_STACK_ADDR + 0x18u, kQdAddr);
+            writeGuestU32(env.rdram.data(), K_STACK_ADDR + 0x10u, 0xDEAD0010u);
+            writeGuestU32(env.rdram.data(), K_STACK_ADDR + 0x14u, 0xDEAD0014u);
+            writeGuestU32(env.rdram.data(), K_STACK_ADDR + 0x18u, 0xDEAD0018u);
+            setRegU32(env.ctx, 8, 0u);               // t0: cfunc
+            setRegU32(env.ctx, 9, kServerCbufAddr);  // t1: cbuf
+            setRegU32(env.ctx, 10, kQdAddr);         // t2: qd
 
             setRegU32(env.ctx, 4, kSdAddr);
             setRegU32(env.ctx, 5, kSid);

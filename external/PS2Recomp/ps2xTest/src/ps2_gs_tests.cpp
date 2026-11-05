@@ -431,17 +431,26 @@ void register_ps2_gs_tests()
             constexpr uint32_t kGsCsr = 0x12001000u;
             constexpr uint32_t kGsImr = 0x12001010u;
 
-            const uint64_t csrPattern = 0xA1B2C3D4E5F60718ull;
-            mem.write64(kGsCsr, csrPattern);
-            t.Equals(mem.read64(kGsCsr), csrPattern, "64-bit CSR read should match prior 64-bit write");
+            // DBZIW 033 (app/tests/gs_csr_test.cpp): a guest write only clears the interrupt flags it names (bits 0..4,
+            // write one to clear); FLUSH and RESET never read back and the rest is read-only. So the value is set
+            // directly, and each write is checked for what it clears and for what it leaves alone.
+            const uint64_t csrPattern = 0xA1B2C3D4551B2003ull; // revision/ID, FIELD, SIGNAL and FINISH pending
+            mem.gs().csr.store(csrPattern);
+            t.Equals(mem.read64(kGsCsr), csrPattern, "64-bit CSR read should match the register");
             t.Equals(mem.read32(kGsCsr), static_cast<uint32_t>(csrPattern & 0xFFFFFFFFull), "CSR low dword read should match");
             t.Equals(mem.read32(kGsCsr + 4u), static_cast<uint32_t>(csrPattern >> 32), "CSR high dword read should match");
 
-            mem.write32(kGsCsr, 0x11223344u);
-            t.Equals(mem.read64(kGsCsr), 0xA1B2C3D411223344ull, "32-bit low write should preserve CSR high dword");
+            mem.write64(kGsCsr, 0xA1B2C3D4E5F60718ull); // no pending flag named; FLUSH and RESET set
+            t.Equals(mem.read64(kGsCsr), csrPattern, "64-bit write naming no pending flag should change nothing");
+
+            mem.write64(kGsCsr, 0x2ull);
+            t.Equals(mem.read64(kGsCsr), 0xA1B2C3D4551B2001ull, "64-bit write should clear only the flag it names");
+
+            mem.write32(kGsCsr, 0x1u);
+            t.Equals(mem.read64(kGsCsr), 0xA1B2C3D4551B2000ull, "32-bit low write should clear the flag and preserve CSR high dword");
 
             mem.write32(kGsCsr + 4u, 0x55667788u);
-            t.Equals(mem.read64(kGsCsr), 0x5566778811223344ull, "32-bit high write should preserve CSR low dword");
+            t.Equals(mem.read64(kGsCsr), 0xA1B2C3D4551B2000ull, "32-bit high write should change nothing: the upper word is read-only");
 
             const uint64_t imrPattern = 0x0123456789ABCDEFull;
             mem.write64(kGsImr, imrPattern);
