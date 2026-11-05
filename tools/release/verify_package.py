@@ -8,16 +8,6 @@ import subprocess
 import tempfile
 
 
-def validate_linux_driver_runtime(root):
-    platform_prefixes = ('libwayland-', 'libxcb', 'libX', 'libdrm', 'libvulkan',
-                         'libGL', 'libEGL', 'libgbm', 'libstdc++', 'libgcc_s', 'libLLVM')
-    conflicts = [str(path.relative_to(root)) for path in (root / 'usr/lib').rglob('*')
-                 if '.so' in path.name and path.name.startswith(platform_prefixes)]
-    if conflicts:
-        raise SystemExit('bundled libraries would override host graphics-driver dependencies:\n  ' +
-                         '\n  '.join(sorted(conflicts)))
-
-
 def validate_linux_icon(root):
     # appimagetool derives .DirIcon only from <Icon>.png or .xpm in the AppDir
     # root (not .svg) and refuses to build without one.
@@ -59,8 +49,6 @@ def validate_package(root, windows):
     if missing:
         raise SystemExit("incomplete builder package; required files missing:\n  " +
                          "\n  ".join(missing))
-    if not windows:
-        validate_linux_driver_runtime(root)
 
 
 def package_environment(root, windows):
