@@ -4,9 +4,10 @@
 # same apt.llvm.org snapshot that the package ships (with manifest.json: name, version, size, SHA-256).
 # DW5 027 M11: also the release build's other pinned inputs in /inputs (the FFmpeg source, linuxdeploy,
 # appimagetool from linux-tools.json, size and SHA-256 checked here), so a release build downloads nothing.
-# The toolchain comes from TOOLCHAIN: an approved image (tools/release/linux-toolchain-image, by digest; the inputs
-# are added on top and the compiler and libc++ stay exactly as approved: apt.llvm.org keeps no old snapshots), or
-# `toolchain`, the stage below, which installs today's apt.llvm.org snapshot (only to update the toolchain).
+# The toolchain comes from TOOLCHAIN, the content of tools/release/linux-toolchain-image: `toolchain`, the stage below,
+# which installs today's apt.llvm.org snapshot (DBZIW's first image, and to update the toolchain), or DBZIW's own
+# published image by digest (the inputs are added on top and the compiler and libc++ stay exactly as approved:
+# apt.llvm.org keeps no old snapshots).
 # Built rarely by .github/workflows/builder-image.yml and published to ghcr.io; CI and local release builds use
 # the image pinned by digest in tools/release/linux-builder-image (see LINUX.md). Building it locally:
 #   podman build --build-arg TOOLCHAIN="$(cat tools/release/linux-toolchain-image)" -t dbziw-release-linux \

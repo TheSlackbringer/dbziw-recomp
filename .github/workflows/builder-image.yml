@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - name: Build the image (the approved toolchain plus the pinned inputs)
+      - name: Build the image (the toolchain linux-toolchain-image names, plus the pinned inputs)
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -48,6 +48,10 @@ jobs:
           docker push "$image:$tag"
           ref=$(docker inspect --format '{{index .RepoDigests 0}}' "$image:$tag")
           {
+            echo 'Compiler and libc++ in this image (review them before pinning it):'
+            echo '```'
+            docker run --rm --network=none dbziw-release-linux sh -c 'clang-23 --version | head -n 1; cat /approved-debs/manifest.json'
+            echo '```'
             echo "Published \`$image:$tag\`. To use it, write this line into \`tools/release/linux-builder-image\`:"
             echo '```'
             echo "$ref"

@@ -24,9 +24,9 @@ def pin(name):
 
 class BuilderImageTest(unittest.TestCase):
     def test_the_toolchain_is_the_approved_image(self):
-        # The compiler and libc++ you approved (2026-11-03: "Own images, DW5 toolchain"), by its digest.
+        # The compiler and libc++ in DBZIW's own image, by its digest (you, 2026-11-05: "Dont use DWXLs image. create its own").
         self.assertRegex(pin('linux-toolchain-image'), DIGEST)
-        self.assertTrue(pin('linux-toolchain-image').endswith('@sha256:e8acf93dc99a7c16e906ccf916e40a338e2b890fc1a5280caf2e333a8f441149'))
+        self.assertIn('/dbziw-release-linux@', pin('linux-toolchain-image'))
 
     def test_both_builder_images_are_pinned_by_digest(self):
         for name, image in (('linux-builder-image', 'dbziw-release-linux'), ('windows-builder-image', 'dbziw-release-windows')):

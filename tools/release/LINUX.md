@@ -67,10 +67,12 @@ builds it and publishes it to `ghcr.io/theslackbringer/dbziw-release-linux`;
 local release builds use. The release build checks the `.deb` files against the
 manifest before using them, and makes no request to apt.llvm.org.
 
-The Linux image is built on top of the approved toolchain image named in
-`tools/release/linux-toolchain-image` (by digest): only the pinned inputs are
-added, and the compiler and libc++ stay exactly as approved (apt.llvm.org keeps
-no old snapshots, so a rebuild from the SDK would bring a newer one).
+The Linux image uses no other project's image. `tools/release/linux-toolchain-image`
+names its toolchain: the word `toolchain` builds it from the SDK with today's
+apt.llvm.org snapshot (the first image, and to update the compiler), and DBZIW's
+own published image by digest keeps it: only the pinned inputs are added, and the
+compiler and libc++ stay exactly as approved (apt.llvm.org keeps no old snapshots,
+so a rebuild from the SDK would bring a newer one).
 
 To update a pinned input: change the pin list, run the `builder-image` workflow
 (Actions, "Run workflow"; it also runs when those files change on `main` or a
