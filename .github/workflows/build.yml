@@ -153,7 +153,7 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       # A new image is used only through its own commit: the digest builder-image.yml printed goes here and in tools/release/windows-builder-image.
-      image: PIN_WINDOWS_BUILDER_IMAGE
+      image: ghcr.io/theslackbringer/dbziw-release-windows@sha256:129541d72ae54b63c72f979b8077a6a541a8fc19e03846cb73187817afdbc5ae
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
