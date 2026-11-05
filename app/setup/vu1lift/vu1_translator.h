@@ -9,6 +9,8 @@
 #include <vector>
 
 namespace dbziw::vu1lift {
+// Exact disc files referenced by the generation ranges (for semantic cache keys).
+std::vector<std::filesystem::path> inputFiles(const std::filesystem::path &elf);
 
 // Translates one VU1 program segment starting at entryPc in a 16 KiB microcode image (translate_segment).
 std::string translateSegment(const std::vector<uint8_t> &code, uint32_t entryPc, const std::string &name,
@@ -28,7 +30,8 @@ inline constexpr size_t kTargetsPerPart = 24;
 bool generateLiftedVu1(const std::filesystem::path &elf, std::vector<std::string> &parts, std::string &error,
                        const std::function<void(const std::string &)> &log = {},
                        const std::function<bool(const std::string &)> &staticTiming = {},
-                       size_t targetsPerPart = 0);
+                       size_t targetsPerPart = 0,
+                       const std::function<void(size_t done, size_t total)> &counts = {});
 
 // The 16 KiB VU1 code images the translated programs come from, rebuilt from the executable at `elf` (other disc
 // files from the same folder) exactly as the translator reads them (load_disc_bins: executable, disc-file and range SHA-256

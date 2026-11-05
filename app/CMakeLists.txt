@@ -13,6 +13,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/DbziwPlatform.cmake")
 set(PS2RECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../external/PS2Recomp")
 set(DBZIW_RECOMP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../recomp" CACHE PATH "Folder holding the generated game code")
 set(DBZIW_GENERATED_DIR "${DBZIW_RECOMP_ROOT}/output")
+include(cmake/generated_sources.cmake)
 
 # Vulkan compute GS renderer (paraLLEl-GS)
 set(PS2X_ENABLE_VULKAN_GS ON CACHE BOOL "" FORCE)
@@ -46,6 +47,18 @@ if(DBZIW_DEVELOPER_DIAGNOSTICS)
 endif()
 
 # Setup wizard core: reads the player's disc image, checks and extracts it. Needs no game data.
+find_package(Threads REQUIRED)
+add_library(dbziw_vu_generator OBJECT setup/vu1lift/vu1_timing.cpp setup/vu1lift/vu1_translator.cpp)
+target_link_libraries(dbziw_vu_generator PRIVATE ffmpeg Threads::Threads)
+set(DBZIW_SETUP_GENERATED "${CMAKE_CURRENT_BINARY_DIR}/setup-generated")
+file(GENERATE OUTPUT "${DBZIW_SETUP_GENERATED}/vu-objects-$<CONFIG>.txt"
+    CONTENT "$<JOIN:$<TARGET_OBJECTS:dbziw_vu_generator>,\n>\n")
+add_custom_command(OUTPUT "${DBZIW_SETUP_GENERATED}/vu_producer.h"
+    COMMAND "${CMAKE_COMMAND}" "-DOBJECT_LIST=${DBZIW_SETUP_GENERATED}/vu-objects-$<CONFIG>.txt"
+        "-DOUT=${DBZIW_SETUP_GENERATED}/vu_producer.h" -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/vu_producer.cmake"
+    DEPENDS dbziw_vu_generator $<TARGET_OBJECTS:dbziw_vu_generator> "${CMAKE_CURRENT_SOURCE_DIR}/cmake/vu_producer.cmake"
+    VERBATIM)
+add_custom_target(dbziw_vu_identity DEPENDS "${DBZIW_SETUP_GENERATED}/vu_producer.h")
 add_library(dbziw_setup_core STATIC
     setup/iso9660.cpp
     setup/disc_setup.cpp
@@ -55,11 +68,16 @@ add_library(dbziw_setup_core STATIC
     setup/install_state.cpp
     setup/setup_layout.cpp
     setup/setup_pipeline.cpp
-    setup/vu1lift/vu1_timing.cpp
-    setup/vu1lift/vu1_translator.cpp
+    setup/setup_cache.cpp
+    setup/install_location.cpp
+    setup/installation.cpp
+    setup/uninstall_process.cpp
+    $<TARGET_OBJECTS:dbziw_vu_generator>
 )
+add_dependencies(dbziw_setup_core dbziw_vu_identity)
+target_include_directories(dbziw_setup_core PRIVATE "${DBZIW_SETUP_GENERATED}")
 target_include_directories(dbziw_setup_core PUBLIC setup)
-target_link_libraries(dbziw_setup_core PUBLIC ffmpeg)
+target_link_libraries(dbziw_setup_core PUBLIC ffmpeg Threads::Threads)
 # VU1 translator (issue 012; DW5 025 Step 6, 5442b4a): dbziw_vu1lift <SLES_553.47> <output.cpp> translates the game's
 # VU1 microprograms; dbziw_vu1lift --find-range <image> <pc> <name> [disc files] prints the vu1_inputs.h entries for
 # a program seen in a PS2X_VU1_CENSUS run.
@@ -69,16 +87,55 @@ target_link_libraries(dbziw_vu1lift PRIVATE dbziw_setup_core)
 # The wizard's window (raylib + imgui) and no-window run.
 add_library(dbziw_setup_ui STATIC
     setup/wizard_ui.cpp
+    setup/wizard_storage.cpp
     setup/file_dialog.cpp
 )
+if(TARGET imgui)
+    # A developer build finds the launcher's font here; a package reads it from app/deps/imgui-src.
+    get_target_property(DBZIW_IMGUI_INCLUDES imgui INTERFACE_INCLUDE_DIRECTORIES)
+    list(GET DBZIW_IMGUI_INCLUDES 0 DBZIW_IMGUI_SRC)
+    string(REGEX REPLACE "\\$<BUILD_INTERFACE:(.*)>" "\\1" DBZIW_IMGUI_SRC "${DBZIW_IMGUI_SRC}")
+    target_compile_definitions(dbziw_setup_ui PRIVATE DBZIW_IMGUI_FONT="${DBZIW_IMGUI_SRC}/misc/fonts/Roboto-Medium.ttf")
+endif()
 target_link_libraries(dbziw_setup_ui PUBLIC rlImGui imgui raylib dbziw_setup_core)
 if(WIN32)
-    target_link_libraries(dbziw_setup_ui PUBLIC comdlg32)
+    target_link_libraries(dbziw_setup_ui PUBLIC comdlg32 ole32 uuid)
 endif()
 
 # Developer & first-launch setup executable:
 add_executable(dbziw_setup WIN32 setup/wizard_main.cpp setup/wizard_console.cpp)
 target_link_libraries(dbziw_setup PRIVATE dbziw_setup_ui)
+if(WIN32)
+    target_link_libraries(dbziw_setup_core PUBLIC shell32)
+    # What the player starts on Windows: needs only system DLLs and starts the real launcher in dbziw-data/package/launcher.
+    add_executable(dbziw_bootstrap WIN32 setup/bootstrap_win.c)
+    set_target_properties(dbziw_bootstrap PROPERTIES OUTPUT_NAME DBZIW-bootstrap)
+    target_link_options(dbziw_bootstrap PRIVATE -municode -static)
+endif()
+# Finishes an uninstall after the launcher has closed, from outside the installation.
+add_executable(dbziw_uninstall setup/uninstall_main.cpp setup/installation.cpp setup/install_location.cpp setup/install_state.cpp)
+target_include_directories(dbziw_uninstall PRIVATE setup)
+target_link_libraries(dbziw_uninstall PRIVATE Threads::Threads)
+set_target_properties(dbziw_uninstall PROPERTIES OUTPUT_NAME dbziw-uninstall)
+if(WIN32)
+    target_link_libraries(dbziw_uninstall PRIVATE shell32 user32)
+    set_target_properties(dbziw_uninstall PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_link_options(dbziw_uninstall PRIVATE -static)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # DW5-E a71ccaa3: no C++ ABI boundary with the wizard; glibc stays dynamic to avoid clashing static libraries in the SDK image.
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_compile_options(dbziw_uninstall PRIVATE -stdlib=libstdc++)
+        target_link_options(dbziw_uninstall PRIVATE -stdlib=libstdc++ -nostdlib++ "LINKER:--as-needed")
+        target_link_libraries(dbziw_uninstall PRIVATE "-l:libstdc++.a")
+    else()
+        target_link_options(dbziw_uninstall PRIVATE -static-libstdc++)
+    endif()
+    target_link_options(dbziw_uninstall PRIVATE -static-libgcc)
+endif()
+add_dependencies(dbziw_setup dbziw_uninstall)
+if(WIN32)
+    add_dependencies(dbziw_setup dbziw_bootstrap)
+endif()
 dbziw_windows_target_options(dbziw_setup)
 
 # Testing
@@ -87,6 +144,66 @@ add_executable(dbziw_setup_disc_test tests/setup_disc_test.cpp)
 target_link_libraries(dbziw_setup_disc_test PRIVATE dbziw_setup_core)
 set_target_properties(dbziw_setup_disc_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
 add_test(NAME setup_disc COMMAND dbziw_setup_disc_test)
+# DBZIW 007: the setup CTests from DW5, disc-free.
+foreach(name setup_build setup_codegen setup_pipeline setup_install setup_cache setup_sync)
+    add_executable(dbziw_${name}_test tests/${name}_test.cpp)
+    target_link_libraries(dbziw_${name}_test PRIVATE dbziw_setup_core)
+    # Beside the DLLs: these import FFmpeg's avutil, and a missing DLL stops a Windows program with a dialog.
+    add_test(NAME ${name} COMMAND dbziw_${name}_test)
+endforeach()
+add_executable(dbziw_setup_timing_test tests/setup_timing_test.cpp)
+target_include_directories(dbziw_setup_timing_test PRIVATE setup)
+add_test(NAME setup_timing COMMAND dbziw_setup_timing_test)
+
+# Launcher tests (007, DW5-E's): the real main, storage and pipeline on a made-up disc, with a stand-in window and setup steps.
+set(DBZIW_FIXTURE_DISC DBZIW_TEST_DISC_MANIFEST="${CMAKE_CURRENT_SOURCE_DIR}/tests/launcher_fixture_disc.h")
+add_executable(dbziw_launcher_fixture WIN32 tests/launcher_fixture.cpp setup/wizard_main.cpp setup/wizard_console.cpp setup/wizard_storage.cpp
+    setup/iso9660.cpp setup/disc_setup.cpp setup/run_process.cpp setup/codegen.cpp setup/build_game.cpp setup/install_state.cpp setup/setup_layout.cpp
+    setup/setup_pipeline.cpp setup/setup_cache.cpp setup/install_location.cpp setup/installation.cpp setup/uninstall_process.cpp
+    $<TARGET_OBJECTS:dbziw_vu_generator>)
+add_dependencies(dbziw_launcher_fixture dbziw_vu_identity)
+target_compile_definitions(dbziw_launcher_fixture PRIVATE ${DBZIW_FIXTURE_DISC})
+target_include_directories(dbziw_launcher_fixture PRIVATE setup "${DBZIW_SETUP_GENERATED}")
+target_link_libraries(dbziw_launcher_fixture PRIVATE ffmpeg Threads::Threads)
+add_executable(dbziw_install_fake_game WIN32 tests/install_fake_game.cpp setup/install_location.cpp)
+target_include_directories(dbziw_install_fake_game PRIVATE setup)
+add_executable(dbziw_install_location_test tests/install_location_test.cpp)
+target_link_libraries(dbziw_install_location_test PRIVATE dbziw_setup_core)
+add_test(NAME install_location COMMAND dbziw_install_location_test)
+add_executable(dbziw_install_folder_test tests/install_folder_test.cpp setup/install_location.cpp)
+target_include_directories(dbziw_install_folder_test PRIVATE setup)
+add_test(NAME install_folder_default COMMAND dbziw_install_folder_test $<TARGET_FILE_DIR:dbziw_install_folder_test>)
+set_tests_properties(install_folder_default PROPERTIES ENVIRONMENT "DBZIW_DATA_DIR=;APPIMAGE=")
+add_executable(dbziw_storage_default_test tests/storage_default_test.cpp setup/install_location.cpp)
+target_include_directories(dbziw_storage_default_test PRIVATE setup)
+add_test(NAME storage_default COMMAND dbziw_storage_default_test)
+set_tests_properties(storage_default PROPERTIES ENVIRONMENT "DBZIW_DATA_DIR=")
+add_executable(dbziw_storage_policy_test tests/storage_policy_test.cpp setup/installation.cpp setup/install_location.cpp setup/install_state.cpp)
+target_compile_definitions(dbziw_storage_policy_test PRIVATE ${DBZIW_FIXTURE_DISC})
+target_include_directories(dbziw_storage_policy_test PRIVATE setup)
+target_link_libraries(dbziw_storage_policy_test PRIVATE Threads::Threads)
+add_test(NAME storage_policy COMMAND dbziw_storage_policy_test)
+if(WIN32)
+    target_link_options(dbziw_install_fake_game PRIVATE -static)
+    foreach(target dbziw_launcher_fixture dbziw_install_fake_game dbziw_install_folder_test dbziw_storage_default_test dbziw_storage_policy_test)
+        target_link_libraries(${target} PRIVATE shell32 user32)
+    endforeach()
+endif()
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND AND CMAKE_HOST_SYSTEM_NAME STREQUAL CMAKE_SYSTEM_NAME)
+    set(DBZIW_BOOTSTRAP_ARGS)
+    if(WIN32)
+        set(DBZIW_BOOTSTRAP_ARGS --bootstrap $<TARGET_FILE:dbziw_bootstrap>)
+        add_test(NAME launcher_bootstrap COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/bootstrap_test.py
+            --bootstrap $<TARGET_FILE:dbziw_bootstrap> --child $<TARGET_FILE:dbziw_install_fake_game> --out ${CMAKE_CURRENT_BINARY_DIR}/bootstrap-test)
+    endif()
+    add_test(NAME launcher_install COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/launcher_install_test.py
+        --launcher $<TARGET_FILE:dbziw_launcher_fixture> --game $<TARGET_FILE:dbziw_install_fake_game>
+        --uninstaller $<TARGET_FILE:dbziw_uninstall> ${DBZIW_BOOTSTRAP_ARGS} --out ${CMAKE_CURRENT_BINARY_DIR}/install-launcher-test)
+    set_tests_properties(launcher_install PROPERTIES TIMEOUT 600)
+endif()
+add_executable(dbziw_setup_measure tests/setup_measure.cpp)
+target_link_libraries(dbziw_setup_measure PRIVATE dbziw_setup_core)
 
 # Sofdec movie video input without the IPU (issue 020), shared by the game and its test
 add_library(dbziw_movie_input STATIC src/dbziw_movie_input.cpp)
@@ -105,6 +222,7 @@ add_test(NAME movie_replacement COMMAND dbziw_movie_replacement_test)
 # DBZIW-TEST: GS recording tools (tools/gsreplay, issue 017, from DW5 35701a6): inspect and compare PS2X_GS_RECORD
 # recordings, render their frames offline in either renderer, replay a VIF1 capture without the game.
 set(DBZIW_GSREPLAY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../tools/gsreplay")
+if(EXISTS "${DBZIW_GSREPLAY_DIR}") # DBZIW 007: developer tools, not in a release package
 add_executable(dbziw_gsrec "${DBZIW_GSREPLAY_DIR}/gsrec.cpp")
 target_include_directories(dbziw_gsrec PRIVATE "${PS2RECOMP_DIR}/ps2xRuntime/src/lib" "${PS2RECOMP_DIR}/ps2xRuntime/include")
 add_executable(dbziw_gsrender "${DBZIW_GSREPLAY_DIR}/gsrender.cpp")
@@ -114,6 +232,7 @@ add_executable(dbziw_vif1_replay "${DBZIW_GSREPLAY_DIR}/vif1_replay.cpp")
 target_link_libraries(dbziw_vif1_replay PRIVATE ps2_runtime)
 target_include_directories(dbziw_vif1_replay PRIVATE "${PS2RECOMP_DIR}/ps2xRuntime/src/lib" "${DBZIW_GSREPLAY_DIR}")
 target_compile_options(dbziw_vif1_replay PRIVATE ${DBZIW_ARCH_FLAGS})
+endif()
 
 # DBZIW-TEST: DW5's runtime regression tests at the fork (issue 018, DW5 438a3de app/tests). They guard runtime
 # fixes DBZIW took over at the fork, with authored inputs and small fake function tables: no game data.
@@ -130,6 +249,7 @@ foreach(name vu_minmax vif_unpack_fast vif_unpack_boundary ee_shared_vu0 cd_iop_
 endforeach()
 dbziw_runtime_test(rom_profile src/dbziw_rom_profile.cpp) # DBZIW 037
 dbziw_runtime_test(keyboard_stick) # DBZIW 038
+dbziw_runtime_test(settings_file) # DBZIW 007
 set_tests_properties(keyboard_stick PROPERTIES ENVIRONMENT "PS2X_HOST_INPUT=100:W:1,200:S:1,300:A:1,400:D:1,500:W:1,500:A:1,600:W:1,600:S:1,700:A:1,700:D:1,800:UP:1,900:DOWN:1,1000:LEFT:1,1100:RIGHT:1,1200:W:1,1200:DOWN:1")
 # DBZIW 011: DW5 025's guards for the runtime speed fixes (A, B, C2, C3a, C3b, D) and DW5 023 7T.
 foreach(name dma_chain_snapshot vu1_xgkick_tail gif_arbiter_order)
@@ -207,7 +327,7 @@ if(DBZIW_TSAN_TESTS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU" AND NOT WIN32)
     set_tests_properties(vu1_async_queue_tsan PROPERTIES TIMEOUT 20 ENVIRONMENT "TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1")
 endif()
 
-if(NOT WIN32) # drives the tools through a POSIX shell (env -u, quoting, wait status)
+if(NOT WIN32 AND TARGET dbziw_gsrec) # drives the tools through a POSIX shell (env -u, quoting, wait status)
     add_executable(dbziw_gsreplay_test tests/gsreplay_test.cpp)
     target_link_libraries(dbziw_gsreplay_test PRIVATE ps2_runtime)
     target_include_directories(dbziw_gsreplay_test PRIVATE "${PS2RECOMP_DIR}/ps2xRuntime/src/lib" "${DBZIW_GSREPLAY_DIR}")
@@ -221,12 +341,13 @@ endif()
 # steps get the game; OFF builds only what needs no game data (CI).
 option(DBZIW_BUILD_GAME "Build the game (needs locally generated code)" ON)
 if(DBZIW_BUILD_GAME)
-    file(GLOB DBZIW_GENERATED_SOURCES CONFIGURE_DEPENDS "${DBZIW_GENERATED_DIR}/*.cpp")
+    # DW5 042: generated functions may come in indexed batches, keeping the same ordered unity groups of 64.
+    dbziw_generated_sources(dbziw "${DBZIW_GENERATED_DIR}"
+        "${PS2RECOMP_DIR}/ps2xRuntime/src/main.cpp;${PS2RECOMP_DIR}/ps2xRuntime/src/lib/ps2_debug_panel.cpp"
+        DBZIW_GENERATED_SOURCES DBZIW_BATCHED)
     if(DBZIW_GENERATED_SOURCES)
         add_executable(dbziw
             ${DBZIW_GENERATED_SOURCES}
-            "${PS2RECOMP_DIR}/ps2xRuntime/src/main.cpp"
-            "${PS2RECOMP_DIR}/ps2xRuntime/src/lib/ps2_debug_panel.cpp"
             setup/wizard_console.cpp
             src/dbziw_movies.cpp
             src/dbziw_rom_profile.cpp
@@ -236,6 +357,9 @@ if(DBZIW_BUILD_GAME)
         target_compile_definitions(dbziw PRIVATE PS2X_ENABLE_DEBUG_UI=1 DBZIW_INSTALLED_MODE=1)
         target_compile_options(dbziw PRIVATE ${DBZIW_ARCH_FLAGS} ${DBZIW_STRICT_FP_FLAGS})
         set_target_properties(dbziw PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 64)
+        if(DBZIW_BATCHED)
+            set_target_properties(dbziw PROPERTIES UNITY_BUILD OFF)
+        endif()
         set_source_files_properties(setup/wizard_console.cpp src/dbziw_movies.cpp src/dbziw_rom_profile.cpp
             PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
         # Translated VU1 microprograms (issue 012): written by dbziw_vu1lift (tools/regen.sh, the setup) from the
@@ -266,11 +390,17 @@ if(DBZIW_BUILD_GAME)
     endif()
     # DBZIW-TEST: the PollSema contract under the game's own memory-card write (issue 018): compiles three generated
     # functions, so only where generated code exists, as DW5's version did.
-    set(DBZIW_POLL_SEMA_SOURCES
-        "${DBZIW_GENERATED_DIR}/FUN_00113948_0x113948.cpp"
-        "${DBZIW_GENERATED_DIR}/PollSema_0x101df0.cpp"
-        "${DBZIW_GENERATED_DIR}/SignalSema_0x101dc0.cpp")
+    set(DBZIW_POLL_SEMA_SOURCES)
+    if(DBZIW_GENERATED_SOURCES)
+        foreach(generated FUN_00113948_0x113948.cpp PollSema_0x101df0.cpp SignalSema_0x101dc0.cpp)
+            dbziw_generated_function("${DBZIW_GENERATED_DIR}" "${generated}" generated_source)
+            list(APPEND DBZIW_POLL_SEMA_SOURCES "${generated_source}")
+        endforeach()
+    endif()
     set(dbziw_have_poll_sema_sources ON)
+    if(NOT DBZIW_POLL_SEMA_SOURCES)
+        set(dbziw_have_poll_sema_sources OFF)
+    endif()
     foreach(source IN LISTS DBZIW_POLL_SEMA_SOURCES)
         if(NOT EXISTS "${source}")
             set(dbziw_have_poll_sema_sources OFF)

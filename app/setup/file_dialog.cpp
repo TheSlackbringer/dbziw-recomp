@@ -6,6 +6,7 @@
 #endif
 #include <windows.h>
 #include <commdlg.h>
+#include <shobjidl.h>
 #else
 #include <cstdio>
 #include <cstdlib>
@@ -34,6 +35,38 @@ fs::path pickDiscImage(const std::string &title)
     if (!GetOpenFileNameW(&ofn))
         return {};
     return fs::path(file);
+}
+
+fs::path pickFolder(const std::string &title)
+{
+    const int n = MultiByteToWideChar(CP_UTF8, 0, title.c_str(), -1, nullptr, 0);
+    std::wstring wtitle(size_t(n > 0 ? n : 1), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, title.c_str(), -1, wtitle.data(), n);
+    const HRESULT started = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    fs::path chosen;
+    IFileOpenDialog *dialog = nullptr;
+    if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&dialog))))
+    {
+        DWORD options = 0;
+        dialog->GetOptions(&options);
+        dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_NOCHANGEDIR);
+        dialog->SetTitle(wtitle.c_str());
+        IShellItem *item = nullptr;
+        if (SUCCEEDED(dialog->Show(nullptr)) && SUCCEEDED(dialog->GetResult(&item)))
+        {
+            PWSTR path = nullptr;
+            if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)))
+            {
+                chosen = fs::path(path);
+                CoTaskMemFree(path);
+            }
+            item->Release();
+        }
+        dialog->Release();
+    }
+    if (SUCCEEDED(started))
+        CoUninitialize();
+    return chosen;
 }
 
 #else
@@ -75,6 +108,29 @@ fs::path pickDiscImage(const std::string &title)
                   " --file-filter='Disc images (*.iso) | *.iso *.ISO' --file-filter='All files | *' 2>/dev/null";
     else if (tool == "kdialog")
         command = "kdialog --title " + shellQuote(title) + " --getopenfilename . 'Disc images (*.iso *.ISO)' 2>/dev/null";
+    else
+        return {};
+    FILE *pipe = popen(command.c_str(), "r");
+    if (!pipe)
+        return {};
+    std::string out;
+    char buffer[1024];
+    while (size_t n = std::fread(buffer, 1, sizeof(buffer), pipe))
+        out.append(buffer, n);
+    pclose(pipe);
+    while (!out.empty() && (out.back() == '\n' || out.back() == '\r'))
+        out.pop_back();
+    return out.empty() ? fs::path() : fs::path(out);
+}
+
+fs::path pickFolder(const std::string &title)
+{
+    const std::string tool = picker();
+    std::string command;
+    if (tool == "zenity")
+        command = "zenity --file-selection --directory --title=" + shellQuote(title) + " 2>/dev/null";
+    else if (tool == "kdialog")
+        command = "kdialog --title " + shellQuote(title) + " --getexistingdirectory . 2>/dev/null";
     else
         return {};
     FILE *pipe = popen(command.c_str(), "r");

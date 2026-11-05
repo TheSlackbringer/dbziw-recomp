@@ -2186,6 +2186,12 @@ void PS2DebugPanel::initialize()
         // A hidden run (tests) must not write the panel layout (imgui.ini) next to the game (014 M3d, 2026-10-31).
         if (const char *hidden = std::getenv("PS2X_HIDDEN"); hidden && hidden[0] != '\0' && hidden[0] != '0')
             ImGui::GetIO().IniFilename = nullptr;
+        // DBZIW 007: the panel layout stays beside the settings file, not in the installation.
+        else if (const char *settings = std::getenv("PS2X_SETTINGS_FILE"); settings && *settings)
+        {
+            static const std::string layout = (std::filesystem::path(settings).parent_path() / "imgui.ini").string();
+            ImGui::GetIO().IniFilename = layout.c_str();
+        }
         m_initialized = true;
     }
 #endif

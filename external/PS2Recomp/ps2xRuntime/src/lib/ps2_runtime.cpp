@@ -1,4 +1,5 @@
 #include "runtime/ps2_deterministic.h"
+#include "runtime/ps2_settings.h"
 #include "ps2_runtime.h"
 #include "ps2_log.h"
 #include "ps2_stubs.h"
@@ -1008,13 +1009,20 @@ namespace ps2x_dev
 
 namespace
 {
-// Unknown or missing values return fallback. Older SSAA-based scale values are
-// treated as native output (anti-aliasing is configured separately).
-static uint32_t loadIniValue(const char *wantedKey, std::initializer_list<uint32_t> allowed, uint32_t fallback)
+// The settings file: dbziw.ini in the working directory. DBZIW-DEBUG: PS2X_SETTINGS_FILE=<path> uses another file
+// (the launcher, which keeps it in the user's folder or with a portable game, and test runs).
+static const char *iniPath()
 {
-    std::ifstream file("dw5xl.ini");
+    static const std::string path = [] { const char *v = std::getenv("PS2X_SETTINGS_FILE"); return std::string(v && *v ? v : "dbziw.ini"); }();
+    return path.c_str();
+}
+
+// The value of `wantedKey` in the settings file, trimmed; false if the file or the key is missing.
+static bool loadIniString(const char *wantedKey, std::string &out)
+{
+    std::ifstream file(iniPath());
     if (!file.is_open())
-        return fallback;
+        return false;
     std::string line;
     while (std::getline(file, line))
     {
@@ -1043,29 +1051,40 @@ static uint32_t loadIniValue(const char *wantedKey, std::initializer_list<uint32
 
         if (key == wantedKey)
         {
-            try {
-                const int value = std::stoi(val);
-                for (uint32_t a : allowed)
-                    if (value >= 0 && static_cast<uint32_t>(value) == a)
-                        return a;
-                return fallback;
-            } catch (...) {
-                return fallback;
-            }
+            out = val;
+            return true;
         }
     }
-    return fallback;
+    return false;
+}
+
+// Unknown or missing values return fallback. Older SSAA-based scale values are
+// treated as native output (anti-aliasing is configured separately).
+static uint32_t loadIniValue(const char *wantedKey, std::initializer_list<uint32_t> allowed, uint32_t fallback)
+{
+    std::string val;
+    if (!loadIniString(wantedKey, val))
+        return fallback;
+    try {
+        const int value = std::stoi(val);
+        for (uint32_t a : allowed)
+            if (value >= 0 && static_cast<uint32_t>(value) == a)
+                return a;
+        return fallback;
+    } catch (...) {
+        return fallback;
+    }
 }
 
 static uint32_t loadResolutionScaleFromIni() { return loadIniValue("resolution_scale", {1u, 2u, 4u}, 1u); }
 static uint32_t loadAASamplesFromIni() { return loadIniValue("aa_samples", {1u, 2u, 4u, 8u, 16u}, 0u); }
 
-static void saveIniValue(const std::string &wantedKey, uint32_t value)
+static void saveIniText(const std::string &wantedKey, const std::string &value)
 {
     std::vector<std::string> lines;
     bool found = false;
     {
-        std::ifstream file("dw5xl.ini");
+        std::ifstream file(iniPath());
         if (file.is_open())
         {
             std::string line;
@@ -1101,7 +1120,7 @@ static void saveIniValue(const std::string &wantedKey, uint32_t value)
 
                     if (key == wantedKey)
                     {
-                        std::string newLine = wantedKey + "=" + std::to_string(value);
+                        std::string newLine = wantedKey + "=" + value;
                         if (!comment.empty())
                             newLine += " " + comment;
                         lines.push_back(newLine);
@@ -1116,10 +1135,10 @@ static void saveIniValue(const std::string &wantedKey, uint32_t value)
 
     if (!found)
     {
-        lines.push_back(wantedKey + "=" + std::to_string(value));
+        lines.push_back(wantedKey + "=" + value);
     }
 
-    std::ofstream out("dw5xl.ini");
+    std::ofstream out(iniPath());
     if (out.is_open())
     {
         for (const auto &l : lines)
@@ -1128,6 +1147,8 @@ static void saveIniValue(const std::string &wantedKey, uint32_t value)
         }
     }
 }
+
+static void saveIniValue(const std::string &wantedKey, uint32_t value) { saveIniText(wantedKey, std::to_string(value)); }
 
 // The player's F5 anti-aliasing choice (kept when F4 changes the output scale).
 static uint32_t s_aaChoice = 1u;
@@ -1153,9 +1174,27 @@ static void applySavedOutputSettings(GS &gs)
     }
     // Always state the effective output so test logs show which scale a run used.
     std::fprintf(stderr, "[output] scale=%ux aa=%ux (source: scale %s, aa %s)\n", gs.getResolutionScale(), gs.getAASamples(),
-                 (scaleEnv && *scaleEnv) ? "PS2X_GS_SCALE" : "dw5xl.ini", (aaEnv && *aaEnv) ? "PS2X_GS_SSAA" : "dw5xl.ini");
+                 (scaleEnv && *scaleEnv) ? "PS2X_GS_SCALE" : "dbziw.ini", (aaEnv && *aaEnv) ? "PS2X_GS_SSAA" : "dbziw.ini");
 }
 } // namespace
+
+namespace ps2x::settings
+{
+    bool loadText(const char *key, std::string &value) { return loadIniString(key, value); }
+    void saveText(const std::string &key, const std::string &value) { saveIniText(key, value); }
+    void saveNumber(const std::string &key, uint32_t value) { saveIniValue(key, value); }
+    void setAntiAliasing(GS &gs, uint32_t samples)
+    {
+        s_aaChoice = samples;
+        gs.setAASamples(samples);
+        saveIniValue("aa_samples", samples);
+    }
+    void setResolutionScale(GS &gs, uint32_t scale)
+    {
+        gs.setResolutionScale(scale);
+        saveIniValue("resolution_scale", gs.getResolutionScale());
+    }
+}
 
 
 // Host window rate: a fixed 60 FPS by default. PS2X_HOST_FPS=<n> sets another fixed rate; PS2X_HOST_FPS=field

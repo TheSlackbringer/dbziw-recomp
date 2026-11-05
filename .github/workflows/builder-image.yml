@@ -1,0 +1,84 @@
+# Builds the release builder images (007 step 5, DW5 041 and 027 M11) and publishes them to ghcr.io. Runs rarely: on demand, or when their inputs
+# change. Using a new image is a separate, reviewed commit that writes the printed digest into tools/release/linux-builder-image or
+# tools/release/windows-builder-image (and the windows-build job's container in build.yml); the release jobs never build or change an image.
+name: builder-image
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'ci/**']
+    paths:
+      - tools/release/linux.Containerfile
+      - tools/release/windows.Containerfile
+      - tools/release/linux-toolchain-image
+      - tools/release/linux-tools.json
+      - tools/release/windows-tools.json
+      - tools/release/fetch_inputs.py
+      - tools/release/write_libcxx_manifest.py
+      - .github/workflows/builder-image.yml
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the image (the approved toolchain plus the pinned inputs)
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker build --pull --build-arg TOOLCHAIN="$(cat tools/release/linux-toolchain-image)" \
+            -t dbziw-release-linux -f tools/release/linux.Containerfile tools/release
+      - name: Check the approved libc++ packages and the pinned inputs, with no network
+        run: |
+          docker run --rm --network=none dbziw-release-linux python3 /usr/local/bin/write_libcxx_manifest.py --check /approved-debs
+          docker run --rm --network=none dbziw-release-linux \
+            python3 /usr/local/share/dbziw/fetch_inputs.py --check /usr/local/share/dbziw/linux-tools.json /inputs
+      - name: Publish
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/dbziw-release-linux"
+          tag="$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}"
+          docker tag dbziw-release-linux "$image:$tag"
+          docker push "$image:$tag"
+          ref=$(docker inspect --format '{{index .RepoDigests 0}}' "$image:$tag")
+          {
+            echo "Published \`$image:$tag\`. To use it, write this line into \`tools/release/linux-builder-image\`:"
+            echo '```'
+            echo "$ref"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "$ref"
+
+  windows:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the image
+        run: docker build --pull -t dbziw-release-windows -f tools/release/windows.Containerfile tools/release
+      - name: Check the pinned inputs, with no network
+        run: |
+          docker run --rm --network=none dbziw-release-windows \
+            python3 /usr/local/share/dbziw/fetch_inputs.py --check /usr/local/share/dbziw/windows-tools.json /inputs
+      - name: Publish
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/dbziw-release-windows"
+          tag="$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}"
+          docker tag dbziw-release-windows "$image:$tag"
+          docker push "$image:$tag"
+          ref=$(docker inspect --format '{{index .RepoDigests 0}}' "$image:$tag")
+          {
+            echo "Published \`$image:$tag\`. To use it, write this line into \`tools/release/windows-builder-image\` and the windows-build job's \`container:\` in \`build.yml\`:"
+            echo '```'
+            echo "$ref"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "$ref"

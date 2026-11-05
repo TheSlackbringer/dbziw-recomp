@@ -1,5 +1,7 @@
 #pragma once
-// Where the setup wizard finds the project and its tools.
+// Where the setup wizard finds the project and its tools (DW5 011).
+// Release package: <root>/tools/ holds ps2_recomp(.exe), cmake/, ninja(.exe), and on Windows llvm-mingw/ and
+// ffmpeg.zip. Developer tree: the recompiler from external/PS2Recomp/build, CMake and Ninja from PATH.
 #include "build_game.h"
 
 #include <filesystem>
@@ -20,5 +22,16 @@ std::filesystem::path findRoot(const std::filesystem::path &start);
 // The tools for `root`; `windows` selects the Windows names and the bundled compiler. false + error when a tool
 // the build needs is missing.
 bool findLayout(const std::filesystem::path &root, bool windows, SetupLayout &layout, std::string &error);
+
+// Linux AppImage mounts move between runs. Keep build inputs at one player-data
+// path, preserving identical files so updates can reuse compiler output.
+bool prepareLinuxBuildRoot(const std::filesystem::path &root, const std::filesystem::path &data,
+                           std::filesystem::path &buildRoot, std::string &error);
+// The self-contained layout, DBZIW-Recomp/{launcher, README.txt, dbziw-data/package/...}: copies this package and its launcher into the chosen
+// data folder's parent, keeping identical files, and points `root` at the installed package. Any other data folder: nothing to do.
+bool installReleaseLauncher(std::filesystem::path &root, const std::filesystem::path &data, std::string &error);
+bool prepareBuildRoot(const std::filesystem::path &root, const std::filesystem::path &data,
+                      std::filesystem::path &buildRoot, std::string &error,
+                      const std::function<bool(uint64_t,uint64_t)> &progress = {});
 
 } // namespace dbziw::setup

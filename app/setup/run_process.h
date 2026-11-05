@@ -1,10 +1,11 @@
 #pragma once
-// Starts a program with arguments and waits for it. No shell is involved, so paths with
+// Starts a program with arguments and waits for it (DW5 011 setup wizard). No shell is involved, so paths with
 // spaces or non-ASCII characters are passed through unchanged on Windows and Linux.
 #include <atomic>
 #include <filesystem>
 #include <string>
 #include <vector>
+#include <functional>
 
 namespace dbziw::setup {
 
@@ -13,18 +14,25 @@ struct ProcessResult
     bool started = false;
     int exitCode = -1;
     bool cancelled = false; // stopped because `cancel` was set
-    std::string error;      // why it could not be started
+    std::string error;      // start, observation or owned-process cleanup failure
 };
 
 // Runs `program` with `args` in `workingDirectory`; stdout and stderr go to `logFile` (appended).
-// When `cancel` becomes true the program and everything it started are stopped.
+// When `cancel` becomes true the program and everything it started (Ninja's compilers) are stopped.
 ProcessResult runProcess(const std::filesystem::path &program, const std::vector<std::string> &args,
                          const std::filesystem::path &workingDirectory, const std::filesystem::path &logFile,
                          const std::atomic<bool> *cancel = nullptr);
 
+// Incremental bounded log consumption. A false callback or cancel stops the same child/tree; raw logs remain intact.
+ProcessResult runProcessObserved(const std::filesystem::path &program, const std::vector<std::string> &args,
+                                  const std::filesystem::path &workingDirectory, const std::filesystem::path &logFile,
+                                  const std::function<bool(const std::string &)> &line,
+                                  const std::atomic<bool> *cancel = nullptr);
+
 // Starts `program` and returns at once (the game from the wizard's Play button); it keeps running after the
 // caller exits. false + error if it could not be started.
 bool launchDetached(const std::filesystem::path &program, const std::vector<std::string> &args,
-                    const std::filesystem::path &workingDirectory, std::string &error);
+                    const std::filesystem::path &workingDirectory, std::string &error,
+                    const std::filesystem::path &outputFile = {});
 
 } // namespace dbziw::setup

@@ -278,6 +278,10 @@ namespace ps2x::mpeg
                 }
 
                 m_codecCtx->thread_count = 1;
+                // DBZIW 007: the same picture from every FFmpeg build. Players' packages have no SIMD (--disable-x86asm) and
+                // the default IDCT is chosen by build, which made movies differ from the build the tests run.
+                m_codecCtx->flags |= AV_CODEC_FLAG_BITEXACT;
+                m_codecCtx->idct_algo = FF_IDCT_SIMPLE;
                 m_codecCtx->pkt_timebase = AVRational{1, 90000};
                 // feedElementaryStream() does not create the decoder until a valid
                 // MPEG sequence header has been found.  Dropping non-key pictures
@@ -403,7 +407,7 @@ namespace ps2x::mpeg
                         width,
                         height,
                         AV_PIX_FMT_RGBA,
-                        SWS_BILINEAR,
+                        SWS_BILINEAR | SWS_BITEXACT | SWS_ACCURATE_RND,
                         nullptr,
                         nullptr,
                         nullptr);

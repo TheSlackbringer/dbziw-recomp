@@ -1,6 +1,10 @@
 #pragma once
 // Setup wizard core: recognise a supported disc image and extract it with checksum verification.
+#ifdef DBZIW_TEST_DISC_MANIFEST
+#include DBZIW_TEST_DISC_MANIFEST // launcher tests: a small made-up disc instead of the retail file list
+#else
 #include "disc_manifest.h"
+#endif
 #include "iso9660.h"
 
 #include <filesystem>

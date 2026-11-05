@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=DBZIW Recomp
+Comment=Build and play Dragon Ball Z: Infinite World (PAL) from your own disc image
+Exec=dbziw_setup
+Icon=dbziw
+Categories=Game;ActionGame;
+Terminal=false

@@ -1,0 +1,35 @@
+<h1>Dragon Ball Z: Infinite World — Native PC Port</h1>
+<p>This port uses static recompilation (MIPS R5900 → C++) and Vulkan rendering. The download contains no disc files, translated game code or compiled game. Everything needed to build the game from your own disc on your own PC is included.</p>
+<h2>What you need</h2>
+<ul>
+<li><strong>Dragon Ball Z: Infinite World</strong>, PAL <strong>SLES-55347</strong>, as an ISO.</li>
+<li>An x86-64 CPU with AVX2 and a Vulkan-compatible graphics card with current drivers.</li>
+<li>Windows 10 (1903 or newer) / Windows 11, or Linux with glibc 2.31 or newer.</li>
+</ul>
+<p>No separate compiler, Git or Python installation is required. The first build works offline.</p>
+<h2>Linux: AppImage</h2>
+<ol>
+<li>Download <strong><code>DBZIW.AppImage</code></strong>.</li>
+<li>Mark it executable in your file manager, then open it.</li>
+<li>Select your ISO and click <strong>Start</strong>.</li>
+<li>Let setup verify the disc, translate the code and compile the game. Allow several minutes; the time depends on your CPU. The game starts when setup finishes.</li>
+</ol>
+<p>Open the same AppImage again to play. Linux updates reuse unchanged build files where possible; your saves and settings stay in the player data folder.</p>
+<h2>Windows: ZIP</h2>
+<ol>
+<li>Download <strong><code>DBZIW.windows-x64.zip</code></strong> and extract it to a short path such as <code>C:\Games\DBZIW</code>.</li>
+<li>Keep the extracted files together and launch <strong><code>DBZIW.exe</code></strong>. If SmartScreen warns about the unsigned program, choose <strong>More info → Run anyway</strong>.</li>
+<li>Select your ISO and click <strong>Start</strong>. The first start builds the game locally; later starts launch it directly.</li>
+</ol>
+
+<h2>Game data and saves</h2>
+<ul>
+<li><strong>Windows:</strong> <code>%LOCALAPPDATA%\DBZIW\</code></li>
+<li><strong>Linux:</strong> <code>$XDG_DATA_HOME/dbziw/</code>, normally <code>~/.local/share/dbziw/</code></li>
+</ul>
+<p>Within that folder, the compiled game is in <code>build/</code> and memory-card saves are in <code>game/mc0/</code>. Game files, settings and logs also stay there, separately from the download.</p>
+<h2>Source and licenses</h2>
+<p><a href="https://github.com/TheSlackbringer/dbziw-recomp">Source code</a> is available under GPL-3.0. Third-party license notices are included with the bundled tools and libraries.</p>
+<p>This is an unofficial, non-commercial fan project, unaffiliated with Bandai Namco, Dimps or Sony Interactive Entertainment.</p>
+<hr>
+<h2>Changelog</h2>

@@ -1,0 +1,117 @@
+# Linux builder release
+
+The AppImage contains the graphical setup launcher, native PS2 recompiler, app
+and runtime sources, Clang, CMake, Ninja, a Linux SDK and minimal FFmpeg. It
+contains no game files, translated code or game executable. On first start the
+player selects their own PAL disc image (SLES-55347) and an installation folder
+(suggested: `~/Games/DBZIW-Recomp`), and builds offline. That one folder holds a
+copy of the AppImage, the README and `dbziw-data/`, with the game files, the
+build and the logs. Saves and settings go to `$XDG_DATA_HOME/dbziw/user-data` and
+`$XDG_CONFIG_HOME/dbziw/config`, or to `dbziw-data/user-data` when the player chooses
+portable. Build inputs are synchronized into `dbziw-data/builder/` before a first
+build or an update. Identical files keep their timestamps, so a changing AppImage
+mount path does not discard the player's compiled objects. Normal later starts
+skip this synchronization and launch the game directly.
+
+The target is x86-64 with AVX2, glibc 2.31 or newer, and a Vulkan graphics driver.
+The compiler baseline is built in the pinned Steam Runtime 3 SDK; it does not
+require a compiler, Git or Python on the player's system.
+
+## Build the package
+
+CI prepares the source dependencies, then runs the same offline builder used
+locally; the pinned tools and archives come from the builder images, so a
+release run downloads nothing from other sites (as DW5 027 M11). The Linux AppImage and Windows ZIP are
+uploaded to the same numbered draft only after all required jobs pass.
+Publishing remains an owner action.
+
+Local prerequisites are Podman, Python and the existing dependency sources.
+Pull the builder image once: `podman pull "$(cat tools/release/linux-builder-image)"`.
+The release build itself runs with networking disabled and never installs host
+packages. Supply these inputs:
+
+```sh
+export DBZIW_DEP_ROOT=/path/to/app/deps
+export DBZIW_RECOMP_DEPS=/path/to/recompiler/build/_deps
+export DBZIW_LINUX_SDK_WORK=/path/to/linux-sdk-work
+export DBZIW_BUILD_JOBS=2
+bash tools/release/build_linux.sh
+```
+
+`DBZIW_DEP_ROOT` holds patched `parallel-gs`, `raylib-src`, `imgui-src` and
+`rlimgui-src` source checkouts. `DBZIW_RECOMP_DEPS` holds the five dependency
+checkouts populated by configuring PS2Recomp. No game data is used.
+
+`linux-tools.json` pins the AppImage tools and FFmpeg source. They are fetched
+and checked (size, SHA-256) once, when the builder image is built, and kept in
+its `/inputs`; the release build uses those copies. `DBZIW_FFMPEG_SOURCE` and
+`DBZIW_APPIMAGE_TOOLS` point to other copies, used when they exist. Local builds
+never fetch missing inputs automatically.
+
+The Windows package is built the same way in its own image
+(`tools/release/windows.Containerfile`: archlinux pinned by digest, the
+cross-compiler and every pinned Windows input from `windows-tools.json`),
+published as `ghcr.io/theslackbringer/dbziw-release-windows` and pinned in
+`tools/release/windows-builder-image` and the windows-build job of
+`.github/workflows/build.yml`.
+
+## Builder image
+
+The compiler and the libc++ that the package ships come from one image:
+`tools/release/linux.Containerfile` (Steam Runtime 3 sniper SDK, pinned by
+digest, plus clang/lld/llvm 23 and the six libc++ `.deb` files of the same
+apt.llvm.org snapshot in `/approved-debs`, listed with name, version, size and
+SHA-256 in `/approved-debs/manifest.json`). The workflow `builder-image`
+builds it and publishes it to `ghcr.io/theslackbringer/dbziw-release-linux`;
+`tools/release/linux-builder-image` holds the exact image (by digest) that CI and
+local release builds use. The release build checks the `.deb` files against the
+manifest before using them, and makes no request to apt.llvm.org.
+
+The Linux image is built on top of the approved toolchain image named in
+`tools/release/linux-toolchain-image` (by digest): only the pinned inputs are
+added, and the compiler and libc++ stay exactly as approved (apt.llvm.org keeps
+no old snapshots, so a rebuild from the SDK would bring a newer one).
+
+To update a pinned input: change the pin list, run the `builder-image` workflow
+(Actions, "Run workflow"; it also runs when those files change on `main` or a
+`ci/` branch), check its summary, and commit the printed image lines into
+`tools/release/linux-builder-image` and, for Windows,
+`tools/release/windows-builder-image` and build.yml. To update the compiler or
+libc++: write `toolchain` into `tools/release/linux-toolchain-image` (the image is
+then built from the SDK with today's apt.llvm.org snapshot), run the workflow,
+check the libc++ version in its summary, and pin the result in both
+`linux-builder-image` and `linux-toolchain-image`. `DBZIW_LINUX_IMAGE`
+overrides the image for a local test, e.g. one built from the Containerfile.
+
+The script builds the launcher and recompiler, runs the setup tests, scans the
+AppDir for forbidden game content, and writes
+`DBZIW-RECOMP-<version>-x86_64.AppImage` with SHA-256 and `.zsync` sidecars
+under `dist/`. SDK export, compiler, test and packaging logs stay in
+`DBZIW_LINUX_SDK_WORK`. A clean checkout is required; `--test` permits local
+changes and labels the resulting package for testing.
+
+For systems without FUSE, AppImage's standard `APPIMAGE_EXTRACT_AND_RUN=1`
+environment setting can be used. The launcher stays alive while its game child
+runs so the bundled runtime libraries remain available.
+
+## Updates
+
+The AppImage carries update information for AppImage updaters such as
+AppImageUpdate: `gh-releases-zsync|TheSlackbringer|dbziw-recomp|latest|DBZIW-RECOMP-*x86_64.AppImage.zsync`
+(`UPDATE_INFORMATION` in `make_release.py`). An updater asks GitHub for the
+latest full release, which skips pre-releases, and downloads the changed parts
+of the AppImage that its `.zsync` names. appimagetool writes the `.zsync` with
+its bundled `zsyncmake`; the build fails unless it exists and matches the
+AppImage, because appimagetool only warns when it cannot make one.
+
+The `.zsync` names the AppImage by file name. The draft job renames the
+AppImage from the commit to the release tag, so it also renames the `.zsync`
+and rewrites its `Filename:` and `URL:` lines (`zsync_file.py`); the checksums
+inside describe the bytes and stay valid. Renaming a release or its tag is
+harmless; renaming the AppImage or `.zsync` asset by hand breaks updates for
+that release. Drafts are created as full releases so that a published release
+reaches updaters; marking one as a pre-release hides it from them.
+
+Updating the AppImage updates the builder only. The player's files stay in
+`$XDG_DATA_HOME/dbziw`; the first start of a newer AppImage rebuilds the game
+once without asking for the disc again, and later starts open the game directly.

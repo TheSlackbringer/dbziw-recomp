@@ -1,0 +1,260 @@
+// Setup wizard pipeline (DW5 011): step order, progress, errors and cancel, on the synthetic image with stand-in
+// generate / lift / build steps (the real ones need the player's disc and are checked locally, see notes).
+#include "install_state.h"
+#include "setup_pipeline.h"
+#include "synthetic_iso.h"
+
+#include <chrono>
+#include <iostream>
+#include <stdexcept>
+#include <thread>
+
+using namespace dbziw::setup;
+using namespace dbziw::setup::test;
+namespace fs = std::filesystem;
+
+namespace {
+void require(bool ok, const char *what)
+{
+    if (!ok)
+        throw std::runtime_error(what);
+}
+
+bool contains(const std::string &text, const std::string &part) { return text.find(part) != std::string::npos; }
+
+const DiscSpec kDiscs[] = {{"test disc", "test", kTestFiles}};
+
+struct Fakes
+{
+    std::vector<std::string> calls;
+    std::string failIn;     // step that returns an error
+    bool waitForCancel = false;
+
+    SetupSteps steps()
+    {
+        SetupSteps s;
+        s.generate = [this](const SetupOptions &o, StepContext &c, std::string &error) {
+            calls.push_back("generate");
+            require(fs::exists(o.effectiveDataDir() / "game" / "test" / "A.BIN"), "generate runs after extraction");
+            c.progress(0.5, "ovl01");
+            c.log("generating ovl01");
+            if (waitForCancel)
+            {
+                for (int i = 0; i < 500 && !c.cancelled(); ++i)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                return false;
+            }
+            return failIn != "generate" || (error = "boom", false);
+        };
+        s.liftVu1 = [this](const SetupOptions &, StepContext &, std::string &error) {
+            calls.push_back("lift");
+            return failIn != "lift" || (error = "boom", false);
+        };
+        s.build = [this](const SetupOptions &o, StepContext &c, fs::path &exe, std::string &error) {
+            calls.push_back("build");
+            c.progress(1.0, "1147/1147");
+            exe = o.root / "game.exe";
+            return failIn != "build" || (error = "boom", false);
+        };
+        return s;
+    }
+};
+
+SetupOptions options(const fs::path &root, const fs::path &iso)
+{
+    SetupOptions o;
+    o.root = root;
+    o.iso = iso;
+    o.discs = kDiscs;
+    return o;
+}
+
+SetupStatus runWith(SetupOptions o, Fakes &fakes, bool cancelSoon = false)
+{
+    SetupRun run(std::move(o), fakes.steps());
+    run.start();
+    if (cancelSoon)
+    {
+        for (int i = 0; i < 500 && run.status().step != Step::Generate; ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        run.cancel();
+    }
+    run.wait();
+    return run.status();
+}
+} // namespace
+
+int main()
+{
+    try
+    {
+        const fs::path dir = fs::temp_directory_path() / "dbziw_setup_pipeline_test";
+        fs::remove_all(dir);
+        fs::create_directories(dir);
+        const fs::path iso = dir / "disc.iso";
+        write(iso, buildImage());
+
+        { // the whole run
+            Fakes f;
+            const auto st = runWith(options(dir / "a", iso), f);
+            require(st.finished && !st.failed && !st.cancelled && !st.running, "run succeeds");
+            require(st.step == Step::Done && st.executable == dir / "a" / "game.exe", "ends at Done with the game");
+            require(f.calls == std::vector<std::string>{"generate", "lift", "build"}, "steps in order");
+            require(slurp(dir / "a" / "game" / "test" / "A.BIN") == fileA(), "extracted into game/<folder>");
+            bool sawLog = false;
+            for (const auto &line : st.log)
+                sawLog |= contains(line, "generating ovl01");
+            require(sawLog, "step log lines reach the status");
+        }
+        { // not a supported disc: stops at Check, nothing else runs
+            write(dir / "junk.iso", std::vector<uint8_t>(64 * 1024, 0x5a));
+            Fakes f;
+            const auto st = runWith(options(dir / "c", dir / "junk.iso"), f);
+            require(st.failed && st.step == Step::Check, "unsupported image fails at Check");
+            require(contains(st.error, stepName(Step::Check)), "error names the step");
+            require(f.calls.empty() && !fs::exists(dir / "c" / "game"), "nothing extracted or generated");
+        }
+        { // missing image
+            Fakes f;
+            const auto st = runWith(options(dir / "d", dir / "missing.iso"), f);
+            require(st.failed && st.step == Step::Check && f.calls.empty(), "missing image fails at Check");
+        }
+        { // a failing step stops the run and is named
+            Fakes f;
+            f.failIn = "lift";
+            const auto st = runWith(options(dir / "e", iso), f);
+            require(st.failed && st.step == Step::LiftVu1, "fails at LiftVu1");
+            require(contains(st.error, stepName(Step::LiftVu1)) && contains(st.error, "boom"), "step + reason");
+            require(f.calls == std::vector<std::string>{"generate", "lift"}, "build not started");
+        }
+        for(const std::string stage:{"generate","build"})
+        { // 042: generation/native failure invalidates old completion, preserves cards/settings and permits retry.
+            Fakes f;f.failIn=stage;auto o=options(dir/("failed-"+stage),iso);o.releaseId="retry-fixture";
+            fs::create_directories(o.effectiveBuildDir());
+            fs::create_directories(o.root/"game/test/mc0");
+            const std::vector<uint8_t> saved={'s','a','v','e'},settings={'s','e','t'};
+            write(o.root/"game/test/mc0/card",saved);write(o.root/"settings.ini",settings);
+            write(o.effectiveBuildDir()/"built-from.txt",{'o','l','d'});
+            write(o.effectiveBuildDir()/"ready.record",{'o','l','d'});
+            const auto st=runWith(o,f);
+            require(st.failed && !st.finished,"failed generation/native build is not complete");
+            require(!fs::exists(o.effectiveBuildDir()/"built-from.txt") && !fs::exists(o.effectiveBuildDir()/"ready.record"),
+                    "failed release retains no completed-build marker");
+            require(slurp(o.root/"game/test/mc0/card")==saved && slurp(o.root/"settings.ini")==settings,
+                    "failure preserves cards/settings byte for byte");
+            Fakes retry;require(runWith(o,retry).finished,"clean retry succeeds after generation/native failure");
+            require(slurp(o.root/"game/test/mc0/card")==saved && slurp(o.root/"settings.ini")==settings,
+                    "retry preserves cards/settings byte for byte");
+        }
+        { // cancel
+            Fakes f;
+            f.waitForCancel = true;
+            const auto st = runWith(options(dir / "f", iso), f, true);
+            require(st.cancelled && !st.failed && !st.finished, "cancel is reported as cancelled, not failed");
+            require(f.calls == std::vector<std::string>{"generate"}, "nothing runs after cancel");
+        }
+        { // 042: a competing pipeline is refused before it creates logs or calls a build step.
+            Fakes first;first.waitForCancel=true;
+            auto o=options(dir/"concurrent",iso);
+            SetupRun active(o,first.steps());active.start();
+            for(int i=0;i<500 && active.status().step!=Step::Generate;++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            require(active.status().step==Step::Generate,"first pipeline reached protected generation");
+            const auto logs=[&] {size_t n=0;for(const auto &e:fs::directory_iterator(o.effectiveLogDir())) if(e.is_regular_file()) ++n;return n;};
+            const auto before=logs();Fakes second;
+            SetupRun competing(o,second.steps());competing.start();
+            require(!competing.wait() && competing.status().failed && second.calls.empty(),
+                    "second pipeline cannot mutate the shared setup");
+            require(logs()==before,"second pipeline is refused before writing shared logs");
+            active.cancel();require(!active.wait() && active.status().cancelled,"first pipeline stops cleanly");
+        }
+        { // release layout: package (root) and player data folder apart
+            Fakes f;
+            auto o = options(dir / "pkg", iso);
+            o.dataDir = dir / "data";
+            const auto st = runWith(o, f);
+            require(st.finished, "run with a separate data folder succeeds");
+            require(fs::exists(dir / "data" / "game" / "test" / "A.BIN") &&
+                        installState(dir / "data", kDiscs[0]) == InstallState::Installed,
+                    "disc files and marker in the data folder");
+            require(!fs::exists(dir / "pkg" / "game"), "nothing written into the package folder");
+            require(o.effectiveBuildDir() == dir / "data" / "build" && o.effectiveLogDir() == dir / "data" / "logs",
+                    "build and logs in the data folder");
+
+            // a new release: no disc image given, the installed files are used, the game is rebuilt
+            Fakes again;
+            auto rebuild = o;
+            rebuild.iso.clear();
+            const auto st2 = runWith(rebuild, again);
+            require(st2.finished && again.calls == std::vector<std::string>{"generate", "lift", "build"},
+                    "rebuild without the disc image: check/extract skipped, the rest runs");
+            bool said = false;
+            for (const auto &line : st2.log)
+                said |= contains(line, "using the installed files");
+            require(said, "the log says the installed files are used");
+        }
+        { // no disc image and nothing installed: still an error at Check
+            Fakes f;
+            auto o = options(dir / "pkg2", {});
+            o.dataDir = dir / "data2";
+            const auto st = runWith(o, f);
+            require(st.failed && st.step == Step::Check && f.calls.empty(), "no image, nothing installed: Check fails");
+        }
+        { // one progress bar: the weighted whole
+            const std::vector<Step> all = {Step::Check, Step::Extract, Step::Generate, Step::LiftVu1, Step::Build};
+            const auto near = [](double a, double b) { return a > b - 1e-9 && a < b + 1e-9; };
+            require(near(overallProgress(all, Step::Check, 0.0), 0.0), "starts at 0");
+            require(near(overallProgress(all, Step::Build, 0.5), (1 + 13 + 9 + 23 + 83) / 212.0), "weighted");
+            require(near(overallProgress(all, Step::Build, 1.0), 1.0), "ends at 1");
+            const std::vector<Step> rebuild = {Step::Generate, Step::LiftVu1, Step::Build};
+            require(near(overallProgress(rebuild, Step::LiftVu1, 0.0), 9 / 198.0), "skipped steps do not count");
+            const std::vector<Step> install = {Step::Check, Step::Extract};
+            require(near(overallProgress(install, Step::Extract, 0.5), (1 + 6.5) / 14.0), "install-only run");
+            double last = -1.0;
+            for (Step st : all)
+                for (double fr = 0.0; fr <= 1.0; fr += 0.25)
+                {
+                    const double v = overallProgress(all, st, fr);
+                    require(v >= last - 1e-9, "never goes backwards");
+                    last = v;
+                }
+        }
+        { // a whole run reports its plan and ends at 100 %
+            Fakes f;
+            const auto st = runWith(options(dir / "z", iso), f);
+            require(st.finished && st.overall > 0.999 && st.plan.size() == 5, "overall 1.0, five planned steps");
+        }
+        { // 042: 100% and release completion are published only after all bookkeeping succeeds.
+            Fakes f;auto o=options(dir/"release",iso);o.releaseId="fixture-042";
+            auto steps=f.steps();const auto build=steps.build;
+            SetupRun *active=nullptr;
+            steps.build=[&](const SetupOptions &opts,StepContext &ctx,fs::path &exe,std::string &error) {
+                const bool ok=build(opts,ctx,exe,error);
+                const auto st=active->status();
+                require(!st.finished && st.overall<1.0,"last build edge is not a completed setup");
+                write(exe,std::vector<uint8_t>{'e','x','e'});return ok;
+            };
+            SetupRun run(o,steps);active=&run;run.start();
+            const std::string expectedMarker="fixture-042\n";
+            require(run.wait() && slurp(o.effectiveBuildDir()/"built-from.txt")==std::vector<uint8_t>(expectedMarker.begin(),expectedMarker.end()),
+                    "finished release has an atomically published build marker");
+            fs::remove(o.effectiveBuildDir()/"built-from.txt");
+            fs::create_directory(o.effectiveBuildDir()/"built-from.txt");
+            write(o.effectiveBuildDir()/"built-from.txt/block",std::vector<uint8_t>{'x'});
+            SetupRun broken(o,steps);active=&broken;broken.start();
+            require(!broken.wait() && broken.status().failed && !broken.status().finished,
+                    "completion publication failure cannot report success");
+        }
+        for (int i = 0; i <= kStepCount; ++i)
+            require(stepName(Step(i)) && *stepName(Step(i)), "every step has a name");
+
+        fs::remove_all(dir);
+        std::cout << "setup pipeline tests passed\n";
+        return 0;
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "FAIL: " << e.what() << "\n";
+        return 1;
+    }
+}

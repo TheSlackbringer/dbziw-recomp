@@ -1,0 +1,33 @@
+#pragma once
+#include <filesystem>
+#include <string>
+#include <vector>
+namespace dbziw::setup
+{
+std::string pathText(const std::filesystem::path &path);
+std::filesystem::path pathFromText(const std::string &text);
+// What the folder field starts with: C:\Games\DBZIW-Recomp on Windows, ~/Games/DBZIW-Recomp on Linux, empty with no usable $HOME.
+std::filesystem::path suggestedInstallFolder();
+// Actual executable location; AppImages use their original file, never the mounted payload.
+std::filesystem::path executableDirectory(std::string &error);
+std::filesystem::path launcherDirectory(std::string &error);
+std::vector<std::string> nativeArguments(int argc, char **argv);
+bool resolveInstallLocation(const std::filesystem::path &launcher, const std::filesystem::path &commandLine,
+                            std::filesystem::path &destination, bool &explicitOverride, std::string &error);
+bool validateInstallDirectory(const std::filesystem::path &directory, std::string &error);
+// Same access check, but a missing folder is left uncreated: its nearest existing parent is tested instead.
+bool checkInstallDirectory(const std::filesystem::path &directory, std::string &error);
+// Windows' path limit: false + error when the longest installed file would not fit below this data folder.
+bool installPathFits(const std::filesystem::path &root, std::string &error);
+bool writeAtomicText(const std::filesystem::path &file, const std::string &text, std::string &error);
+// Shared by the wizard and its disc-free regression tests. Empty picker results are cancellation.
+struct InstallFolderSelection
+{
+    std::filesystem::path launcher, destination;
+    bool explicitOverride = false;
+    bool frozen = false;
+    std::string error;
+    bool choose(const std::filesystem::path &path);
+    bool prepare();
+};
+} // namespace dbziw::setup

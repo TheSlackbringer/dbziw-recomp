@@ -9,9 +9,13 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
+#include <thread>
 #include <cctype>
 #include <cmath>
 #include <cstdarg>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <fstream>
@@ -237,7 +241,8 @@ std::string blendWrap(const std::string &reg, const std::string &val, uint32_t d
 // DW5 025 v10 V1 (port of NORM_KNOWN / nv): lanes known to hold zero or a normal float per VF register (bits as
 // in dest: x=8 y=4 z=2 w=1) for the pair being translated; nullptr = nothing known. norm() is the identity on such
 // lanes, so it is left out where every lane an operand is read in is known (see normKnownStates).
-const std::map<uint32_t, uint32_t> *g_normKnown = nullptr;
+// One per thread: programs are translated in parallel (DBZIW 007).
+thread_local const std::map<uint32_t, uint32_t> *g_normKnown = nullptr;
 
 std::string nv(uint32_t r, uint32_t lanes)
 {
@@ -1465,10 +1470,18 @@ std::vector<uint32_t> findReachable(const std::vector<uint8_t> &code, uint32_t e
 }
 
 // ---- translate_segment ----
+static std::string translateReachable(const std::vector<uint8_t> &code, uint32_t entryPc, const std::string &fnName,
+                                      bool staticTiming, const Reachable &reach);
+
 std::string translateSegment(const std::vector<uint8_t> &code, uint32_t entryPc, const std::string &fnName,
                              bool staticTiming)
 {
-    const Reachable reach = findReachableWithCalls(code, entryPc);
+    return translateReachable(code, entryPc, fnName, staticTiming, findReachableWithCalls(code, entryPc));
+}
+
+static std::string translateReachable(const std::vector<uint8_t> &code, uint32_t entryPc, const std::string &fnName,
+                                      bool staticTiming, const Reachable &reach)
+{
     const std::vector<uint32_t> &reachable = reach.pcs;
     Segment seg{code};
     seg.queueFmacFlags = false;
@@ -1835,9 +1848,23 @@ DiscBins loadDiscBins(const std::filesystem::path &elfPath)
 
 } // namespace
 
+std::vector<std::filesystem::path> inputFiles(const std::filesystem::path &elf)
+{
+    std::set<std::string> names;
+    for (const Range &range : kRanges)
+        for (uint32_t j = 0; j < range.chunkCount; ++j)
+            if (range.chunks[j].source)
+                names.insert(range.chunks[j].source);
+    std::vector<std::filesystem::path> files{elf};
+    for (const auto &name : names)
+        files.push_back(elf.parent_path() / name);
+    return files;
+}
+
 bool generateLiftedVu1(const std::filesystem::path &elf, std::vector<std::string> &parts, std::string &error,
                        const std::function<void(const std::string &)> &log,
-                       const std::function<bool(const std::string &)> &staticTiming, size_t targetsPerPart)
+                       const std::function<bool(const std::string &)> &staticTiming, size_t targetsPerPart,
+                       const std::function<void(size_t done, size_t total)> &counts)
 {
     try
     {
@@ -1846,6 +1873,74 @@ bool generateLiftedVu1(const std::filesystem::path &elf, std::vector<std::string
                 log(line);
         };
         const DiscBins disc = loadDiscBins(elf);
+        // DBZIW 007: the programs do not depend on each other, so they are translated on all cores; everything below
+        // still takes them in table order, so the output does not change. `counts` runs here and may throw to cancel.
+        struct Translated
+        {
+            std::string segment, failure;
+            std::vector<uint32_t> reach;
+        };
+        const size_t targetCount = std::size(kTargets);
+        std::vector<Translated> translated(targetCount);
+        std::vector<char> timed(targetCount);
+        for (size_t i = 0; i < targetCount; ++i)
+            timed[i] = !staticTiming || staticTiming(kTargets[i].name);
+        {
+            std::atomic<size_t> next{0}, finished{0};
+            std::atomic<bool> stop{false};
+            const auto worker = [&] {
+                for (size_t i = next++; i < targetCount && !stop; i = next++)
+                {
+                    const Target &t = kTargets[i];
+                    const auto it = disc.bins.find(t.key);
+                    if (it != disc.bins.end())
+                    {
+                        try
+                        {
+                            // Once per program: this search is about half the work of a translation.
+                            const Reachable reach = findReachableWithCalls(it->second, t.pc);
+                            translated[i].segment = translateReachable(it->second, t.pc, t.name, timed[i] != 0, reach);
+                            translated[i].reach = reach.pcs;
+                        }
+                        catch (const std::exception &e)
+                        {
+                            translated[i].failure = e.what();
+                        }
+                    }
+                    ++finished;
+                }
+            };
+            std::vector<std::thread> workers;
+            // At most 8: the translator allocates heavily and more threads wait on the heap. Windows, 32 logical cores, serial
+            // 218 s: 4 threads 75 s, 8 threads 47 s, 16 threads 59 s, 32 threads 96 s (007 work log, 2026-11-04).
+            const size_t count = std::clamp<size_t>(std::thread::hardware_concurrency(), 1, 8);
+            for (size_t i = 0; i < count; ++i)
+                workers.emplace_back(worker);
+            const auto joinAll = [&] {
+                for (auto &thread : workers)
+                    thread.join();
+            };
+            try
+            {
+                for (size_t shown = size_t(-1); finished < targetCount;)
+                {
+                    const size_t done = finished;
+                    if (counts && done != shown)
+                        counts(done, targetCount);
+                    shown = done;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                }
+            }
+            catch (...)
+            {
+                stop = true;
+                joinAll();
+                throw;
+            }
+            joinAll();
+            if (counts)
+                counts(targetCount, targetCount);
+        }
         parts.clear();
         std::vector<std::string> out{kPrologue};
         std::vector<std::string> regs{"    // Preserved observed full-image registrations (metadata only):"};
@@ -1869,8 +1964,9 @@ bool generateLiftedVu1(const std::filesystem::path &elf, std::vector<std::string
                 say(std::string("Skipping ") + t.name + ": no captured microcode for " + t.key);
         regs.push_back("");
         regs.push_back("    // Subroutine-level footprint registrations (matches across all dynamic images):");
-        for (const Target &t : kTargets)
+        for (size_t targetIndex = 0; targetIndex < targetCount; ++targetIndex)
         {
+            const Target &t = kTargets[targetIndex];
             const auto it = disc.bins.find(t.key);
             if (it == disc.bins.end())
             {
@@ -1881,19 +1977,15 @@ bool generateLiftedVu1(const std::filesystem::path &elf, std::vector<std::string
                 closePart();
             // Issue 012: a program the translator cannot take (step 3 tries every entry point found on the disc,
             // some of which run into data) is skipped and named with the reason; the rest are still translated.
-            std::string segment;
-            try
+            if (!translated[targetIndex].failure.empty())
             {
-                segment = translateSegment(it->second, t.pc, t.name, !staticTiming || staticTiming(t.name));
-            }
-            catch (const std::exception &e)
-            {
-                say(std::string("Skipping ") + t.name + ": " + e.what());
+                say(std::string("Skipping ") + t.name + ": " + translated[targetIndex].failure);
                 continue;
             }
+            std::string segment = std::move(translated[targetIndex].segment);
             ++inPart;
             const std::vector<uint8_t> &code = it->second;
-            const std::vector<uint32_t> reach = findReachable(code, t.pc);
+            const std::vector<uint32_t> &reach = translated[targetIndex].reach;
             const uint32_t subStart = std::min(*std::min_element(reach.begin(), reach.end()), t.pc);
             const size_t subSize = size_t(t.end) + 8 - subStart;
             const uint64_t subHash = fnv1a64(&code[subStart], subSize);

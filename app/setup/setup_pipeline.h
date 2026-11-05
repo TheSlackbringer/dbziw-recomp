@@ -1,7 +1,7 @@
 #pragma once
-// Setup wizard pipeline: from your own disc to a playable game.
-// Steps: check the disc image -> extract -> generate game C++ -> translate the VU1 code -> compile.
-// Runs on its own thread; the caller polls status() and may cancel().
+// Setup wizard pipeline (DW5 011): the whole "from your own disc to a playable game" run, shared by the wizard
+// window and its command-line mode. Steps: check the disc image → extract → generate the game's C++ → lift the
+// VU1 code → compile. Runs on its own thread; the caller polls status() and may cancel().
 #include "build_game.h"
 #include "disc_setup.h"
 
@@ -13,6 +13,9 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <fstream>
+#include <memory>
+#include <chrono>
 
 namespace dbziw::setup {
 
@@ -28,19 +31,33 @@ enum class Step
 inline constexpr int kStepCount = int(Step::Done);
 const char *stepName(Step step);
 
+// One progress bar for the whole run (owner 2026-10-20): the steps that run, weighted by their measured share of a
+// first start on Windows (check 1, copy 12, translate 12, VU1 3, compile 72). `current` is in `plan`;
+// `fraction` is its progress 0..1. Returns 0..1.
 double overallProgress(const std::vector<Step> &plan, Step current, double fraction);
 
 struct SetupOptions
 {
     std::filesystem::path root;       // project / release root (contains app/, recomp/, game/)
-    std::filesystem::path iso;        // Dragon Ball Z: Infinite World (PAL) ISO
+    std::filesystem::path iso;        // Dragon Ball Z: Infinite World (PAL) disc image
     std::filesystem::path recompiler; // ps2_recomp(.exe)
     BuildTools tools;
     std::filesystem::path buildDir;   // empty: root/app/build
     std::filesystem::path logDir;     // empty: root/logs/setup
+    // Discs the images are checked against: [0] the game.
     std::span<const DiscSpec> discs = kSupportedDiscs;
-    bool installOnly = false;         // Check + Extract only, then write install marker
-    std::filesystem::path dataDir;    // player data folder
+    // Player install (DW5 011 v4): `root` is the player data folder; Check + Extract only, then each disc gets
+    // its install marker. Generate / lift / build are the developer path and are skipped.
+    bool installOnly = false;
+    // Release (DW5 011 v5): the player data folder. Disc files, generated code, the build and its logs go there;
+    // configurations, sources and tools stay in `root` (the release package). Empty: everything under `root`.
+    // With `iso` empty and the disc already installed in the data folder, Check + Extract are skipped (a new
+    // release rebuilds without asking for the disc again).
+    std::filesystem::path dataDir;
+    std::string releaseId; // nonempty: release completion belongs to this pipeline, under its lease
+    bool usePersistentBuilder=false;
+    bool reuseGenerated=false;
+    bool forceGenerate=false; // explicit --rebuild bypasses generation reuse
 
     std::filesystem::path effectiveDataDir() const { return dataDir.empty() ? root : dataDir; }
     std::filesystem::path effectiveBuildDir() const
@@ -56,21 +73,24 @@ struct SetupOptions
 struct SetupStatus
 {
     Step step = Step::Check;
-    double fraction = 0.0;
-    double overall = 0.0;
-    std::vector<Step> plan;
-    std::string detail;
+    double fraction = 0.0; // progress within the current step, 0..1
+    double overall = 0.0;  // progress of the whole run, 0..1 (overallProgress over `plan`)
+    std::vector<Step> plan; // the steps this run does (Check/Extract are skipped when the disc is installed, the
+                            // build steps in install-only runs)
+    std::string detail;    // what the step is doing ("LINKDATA.BIN", "ovl01", "512/1147")
+    double elapsedSeconds=0.0;
     bool running = false;
-    bool finished = false;
+    bool finished = false; // success
     bool failed = false;
     bool cancelled = false;
-    std::string error;
+    std::string error;     // why it failed (names the step)
     std::filesystem::path executable;
-    std::vector<std::string> log;
+    std::vector<std::string> log; // the last lines
 };
 
 class SetupRun;
 
+// What a step gets to report progress and to see a cancel request.
 class StepContext
 {
 public:
@@ -78,17 +98,19 @@ public:
     void progress(double fraction, const std::string &detail);
     void log(const std::string &line);
     bool cancelled() const;
-    const std::atomic<bool> *cancelFlag() const;
+    const std::atomic<bool> *cancelFlag() const; // for tools that stop a running program
+    ps2recomp::timing::Session *timing() const;
+    uint64_t timingParent() const;
 
 private:
     SetupRun &m_run;
 };
 
+// The replaceable steps (the test swaps in fakes; the defaults run the real tools).
 struct SetupSteps
 {
     using Fn = std::function<bool(const SetupOptions &, StepContext &, std::string &error)>;
-    Fn generate;
-    Fn liftVu1;
+    Fn generate, liftVu1;
     std::function<bool(const SetupOptions &, StepContext &, std::filesystem::path &executable, std::string &error)>
         build;
 };
@@ -98,18 +120,19 @@ class SetupRun
 {
 public:
     explicit SetupRun(SetupOptions options, SetupSteps steps = defaultSetupSteps());
-    ~SetupRun();
+    ~SetupRun(); // cancels and waits
     SetupRun(const SetupRun &) = delete;
     SetupRun &operator=(const SetupRun &) = delete;
 
     void start();
     void cancel() { m_cancel = true; }
-    bool wait();
+    bool wait(); // blocks until the run ends; true on success
     SetupStatus status() const;
 
 private:
     friend class StepContext;
     void run();
+    void runSteps();
     void enter(Step step);
     bool fail(const std::string &error);
 
@@ -119,6 +142,11 @@ private:
     mutable std::mutex m_mutex;
     SetupStatus m_status;
     std::thread m_thread;
+    std::ofstream m_timingFile;
+    std::unique_ptr<ps2recomp::timing::Session> m_timing;
+    uint64_t m_timingParent = 0;
+    std::chrono::steady_clock::time_point m_started;
+    bool m_completed=false;
 };
 
 } // namespace dbziw::setup

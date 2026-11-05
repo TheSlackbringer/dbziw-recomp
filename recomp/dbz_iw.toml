@@ -6,6 +6,8 @@ input = "game/SLES_553.47"
 ghidra_output = "recomp/ghidra_functions.csv"
 output = "recomp/output/"
 single_file_output = false
+# DW5 042: preserve native unity groups while avoiding one on-disk file per function.
+output_file_batch_size = 64
 patch_syscalls = false
 patch_cop0 = true
 patch_cache = true

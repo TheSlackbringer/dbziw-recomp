@@ -1,0 +1,322 @@
+# Builds and tests everything that needs no game data, on Linux and for Windows (DW5XL's workflow, 007), and makes the Windows and Linux release
+# packages (builder: launcher, compiler, sources, tools - nothing from the game). The game itself is never built here: it needs code generated from the
+# player's own disc, which must never reach GitHub. DBZIW_BUILD_GAME=OFF builds the runtime, the recompiler, the tools and the tests that use no generated
+# code. On main, a package that passed every job updates the current numbered draft. After the owner publishes it, the next successful build creates the
+# next draft. CI never publishes. Remove this file (one commit) to switch CI off again.
+name: build
+
+on:
+  push:
+    branches: [main, 'ci/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PARALLEL_GS_REV: cc6184af7e0c03da603045ca371ffa5dae9b0655 # README, "pinned paraLLEl-GS"
+  LLVM_MINGW: llvm-mingw-20261006-ucrt-ubuntu-22.04-x86_64
+  FFMPEG_ZIP: ffmpeg-n7.1-241205-lgpl-amd64-shared.zip
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    container: archlinux:latest # same clang/LLVM generation as the development machine
+    steps:
+      - name: Tools
+        run: pacman -Syu --noconfirm --needed git clang lld llvm cmake ninja pkgconf python ffmpeg
+             libx11 libxrandr libxinerama libxcursor libxi xorgproto mesa libglvnd alsa-lib libpulse
+             wayland libxkbcommon vulkan-headers
+      - uses: actions/checkout@v7
+      - name: Test the release tools
+        run: python3 -m unittest discover -s tools/release -p 'test_*.py' -v
+      - name: No game data in the repository
+        run: |
+          bad=$(git ls-files | grep -iE '^(game|discs|ghidra|ghidra_iop|notes)/|/output/|^recomp/(vu0|vu1|iop)/|vu[01]_lifted|\.(iso|elf|irx)$' || true)
+          if [ -n "$bad" ]; then echo "game-derived or local files are tracked:"; echo "$bad"; exit 1; fi
+      - name: paraLLEl-GS (pinned) with the renderer patches
+        run: |
+          git clone -q https://github.com/Arntzen-Software/parallel-gs.git app/deps/parallel-gs
+          git -C app/deps/parallel-gs checkout -q "$PARALLEL_GS_REV"
+          git -C app/deps/parallel-gs submodule update --init Granite
+          git -C app/deps/parallel-gs/Granite submodule update --init third_party/volk third_party/khronos/vulkan-headers
+          git -C app/deps/parallel-gs apply "$PWD"/vendor/parallel-gs-patches/*.patch
+      - name: Configure
+        run: >
+          CC=clang CXX=clang++ cmake -S app -B app/build-ci -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_LINKER_TYPE=LLD -DDBZIW_BUILD_GAME=OFF -DPS2X_ENABLE_SCCACHE=OFF
+          -DPS2X_ENABLE_AGRESSIVE_LOGS=OFF -DPS2X_ENABLE_VULKAN_GS=ON
+          -DPS2X_PARALLEL_GS_SOURCE_DIR="$PWD/app/deps/parallel-gs"
+      - name: Build
+        run: cmake --build app/build-ci
+      - name: Build the recompiler and synthetic native tests
+        run: >
+          CC=clang CXX=clang++ cmake -S external/PS2Recomp -B build-recomp -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_LINKER_TYPE=LLD -DPS2X_BUILD_RUNTIME=ON -DPS2X_BUILD_ANALYZER=ON -DPS2X_BUILD_TEST=ON
+          -DPS2X_BUILD_STUDIO=OFF -DPS2X_ENABLE_SCCACHE=OFF -DPS2X_ENABLE_DEBUG_UI=OFF
+          -DPS2X_ENABLE_VULKAN_GS=OFF -DFETCHCONTENT_SOURCE_DIR_RAYLIB="$PWD/app/build-ci/_deps/raylib-src"
+          && cmake --build build-recomp --target ps2_recomp ps2x_tests ps2x_boundary_native_tests
+      - name: Test recompiler diagnostics and native boundaries (synthetic inputs only)
+        run: |
+          PS2X_TEST_RECOMPILER="$PWD/build-recomp/ps2xRecomp/ps2_recomp" \
+            python3 -m unittest discover -s tools/tests -p 'test_*.py' -v
+          ./build-recomp/ps2xTest/ps2x_boundary_native_tests
+          cd external/PS2Recomp && ../../build-recomp/ps2xTest/ps2x_tests
+      - name: Test (no GPU, no game data)
+        run: ctest --test-dir app/build-ci --output-on-failure
+      - name: Collect dependency sources for the Linux package
+        if: github.event_name != 'pull_request'
+        run: >
+          tar -cJf /tmp/linux-builder-inputs.tar.xz app/deps/parallel-gs
+          app/build-ci/_deps/raylib-src app/build-ci/_deps/imgui-src app/build-ci/_deps/rlimgui-src
+          build-recomp/_deps/elfio-src build-recomp/_deps/toml11-src build-recomp/_deps/fmt-src
+          build-recomp/_deps/libdwarf-src build-recomp/_deps/rabbitizer-src
+      - uses: actions/upload-artifact@v7
+        if: github.event_name != 'pull_request'
+        with:
+          name: linux-builder-inputs
+          path: /tmp/linux-builder-inputs.tar.xz
+          retention-days: 1
+          compression-level: 0
+
+  linux-package:
+    needs: linux
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read # the builder image on ghcr.io
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: linux-builder-inputs
+          path: /tmp
+      - name: Restore dependency sources
+        run: |
+          tar -xf /tmp/linux-builder-inputs.tar.xz
+          for dep in raylib imgui rlimgui; do
+            mv "app/build-ci/_deps/$dep-src" "app/deps/$dep-src"
+          done
+      - name: Pull the pinned builder image (compiler, libc++ and every pinned input inside)
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! command -v podman >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y podman
+          fi
+          echo "$TOKEN" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+          podman pull "$(cat tools/release/linux-builder-image)"
+      - name: Build and package offline (no game data)
+        env:
+          DBZIW_LINUX_SDK_WORK: ${{ runner.temp }}/linux-sdk
+          DBZIW_RECOMP_DEPS: ${{ github.workspace }}/build-recomp/_deps
+          DBZIW_BUILD_JOBS: '2'
+        run: bash tools/release/build_linux.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-package
+          path: |
+            dist/*.AppImage
+            dist/*.AppImage.sha256
+            dist/*.AppImage.zsync
+          retention-days: 14
+          compression-level: 0
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: linux-package-logs
+          path: ${{ runner.temp }}/linux-sdk/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  linux-package-check:
+    # A clean machine: the real AppImage, no compiler on PATH, no game data.
+    needs: linux-package
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: linux-package
+          path: dist
+      - name: Check the package and run its tools
+        run: |
+          chmod +x dist/*.AppImage
+          (cd dist && APPIMAGE_EXTRACT_AND_RUN=1 ./*.AppImage --appimage-extract >/dev/null)
+          python3 tools/release/verify_package.py --root dist/squashfs-root --platform linux --smoke
+
+  windows-build:
+    runs-on: ubuntu-24.04
+    container:
+      # A new image is used only through its own commit: the digest builder-image.yml printed goes here and in tools/release/windows-builder-image.
+      image: PIN_WINDOWS_BUILDER_IMAGE
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    permissions:
+      contents: read
+      packages: read # the builder image on ghcr.io
+    steps:
+      - uses: actions/checkout@v7
+      - name: paraLLEl-GS (pinned) with the renderer patches
+        run: |
+          git config --global --add safe.directory "$PWD"
+          git clone -q https://github.com/Arntzen-Software/parallel-gs.git app/deps/parallel-gs
+          git -C app/deps/parallel-gs checkout -q "$PARALLEL_GS_REV"
+          git -C app/deps/parallel-gs submodule update --init Granite
+          git -C app/deps/parallel-gs/Granite submodule update --init third_party/volk third_party/khronos/vulkan-headers
+          git -C app/deps/parallel-gs apply "$PWD"/vendor/parallel-gs-patches/*.patch
+      - name: Configure (cross-compile with llvm-mingw)
+        run: >
+          cmake -S app -B app/build-win -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_TOOLCHAIN_FILE="$PWD/tools/windows/llvm-mingw.cmake" -DLLVM_MINGW_ROOT="/opt/$LLVM_MINGW"
+          -DDBZIW_BUILD_GAME=OFF -DPS2X_ENABLE_SCCACHE=OFF
+          -DPS2X_ENABLE_AGRESSIVE_LOGS=OFF -DPS2X_ENABLE_VULKAN_GS=ON
+          -DPS2X_PARALLEL_GS_SOURCE_DIR="$PWD/app/deps/parallel-gs"
+          -DPS2X_FFMPEG_PREBUILT_URL="/inputs/$FFMPEG_ZIP"
+      - name: Build
+        run: cmake --build app/build-win
+      - name: Build the recompiler for Windows
+        run: >
+          cmake -S external/PS2Recomp -B build-recomp-win -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_TOOLCHAIN_FILE="$PWD/tools/windows/llvm-mingw.cmake" -DLLVM_MINGW_ROOT="/opt/$LLVM_MINGW"
+          -DPS2X_BUILD_RUNTIME=OFF -DPS2X_BUILD_ANALYZER=OFF -DPS2X_BUILD_TEST=OFF -DPS2X_BUILD_STUDIO=OFF
+          -DPS2X_ENABLE_SCCACHE=OFF
+          && cmake --build build-recomp-win --target ps2_recomp
+      - name: Collect the Windows programs (no game data)
+        run: |
+          mkdir dist
+          cp app/build-win/*_test.exe dist/
+          cp app/build-win/dbziw_launcher_fixture.exe app/build-win/dbziw_install_fake_game.exe app/build-win/dbziw-uninstall.exe app/build-win/DBZIW-bootstrap.exe dist/
+          cp build-recomp-win/ps2xRecomp/ps2_recomp.exe dist/
+          cp "/opt/$LLVM_MINGW/x86_64-w64-mingw32/bin/libc++.dll" "/opt/$LLVM_MINGW/x86_64-w64-mingw32/bin/libunwind.dll" dist/
+          cp app/build-win/*.dll dist/
+          ls dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-tests
+          path: dist
+          retention-days: 7
+      # --- the release package (not for pull requests) ---
+      - name: Minimal FFmpeg for the package (mpeg2video + SHA-256, LGPL, from the checked source)
+        if: github.event_name != 'pull_request'
+        run: |
+          tools/release/build_ffmpeg.sh windows /inputs/ffmpeg-7.1.tar.xz /opt/ffmpeg-min-windows "/opt/$LLVM_MINGW" > /tmp/ffmpeg-build.log 2>&1 \
+            || { tail -50 /tmp/ffmpeg-build.log; exit 1; }
+          tail -2 /tmp/ffmpeg-build.log
+      - name: "Package (checks: clean tree, nothing from the game)"
+        if: github.event_name != 'pull_request'
+        run: |
+          rm -rf dist
+          LLVM_MINGW_ROOT="/opt/$LLVM_MINGW" DBZIW_WIN_TOOLS=/inputs/windows-builder-tools \
+            DBZIW_FFMPEG_MIN=/opt/ffmpeg-min-windows \
+            python3 tools/release/make_release.py windows --build app/build-win --recomp-build build-recomp-win
+          rm -rf dist/DBZIW-*-windows-x64/
+          ls -la dist
+      - uses: actions/upload-artifact@v7
+        if: github.event_name != 'pull_request'
+        with:
+          name: windows-package
+          path: dist
+          retention-days: 14
+          compression-level: 0 # already a zip
+
+  windows-test:
+    needs: windows-build
+    runs-on: windows-latest # real Windows, no GPU
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test binding evidence and host file/link behavior (synthetic only)
+        shell: pwsh
+        run: |
+          python -c "import sys; assert sys.version_info >= (3, 11)"
+          python -B -m unittest discover -s tools/tests -p test_audit_bindings.py -v
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-tests
+          path: dist
+      - name: Check reproducible translator identity
+        shell: pwsh
+        env:
+          PS2X_TEST_RECOMPILER: ${{ github.workspace }}/dist/ps2_recomp.exe
+        run: python -B -m unittest discover -s tools/tests -p test_producer_rebuild.py -v
+      - name: Run the tests that need no game data
+        shell: pwsh
+        working-directory: dist
+        run: |
+          # Every test program in the artifact (the build only made the ones that need no game data), each with a 5-minute limit.
+          $failed = @()
+          foreach ($exe in Get-ChildItem -Filter 'dbziw_*_test.exe' | Where-Object Name -ne 'dbziw_install_folder_test.exe' | Sort-Object Name) {
+            $t = $exe.BaseName
+            $p = Start-Process -FilePath $exe.FullName -NoNewWindow -PassThru `
+                 -RedirectStandardOutput "$t.out.log" -RedirectStandardError "$t.err.log"
+            if (-not $p.WaitForExit(300000)) {
+              $p | Stop-Process -Force; $failed += $t; Write-Host "TIMEOUT $t"; continue
+            }
+            if ($p.ExitCode -ne 0) {
+              $failed += $t; Write-Host "FAIL $t (exit $($p.ExitCode))"
+              Get-Content "$t.out.log", "$t.err.log" -Tail 20
+            } else { Write-Host "PASS $t" }
+          }
+          # The recompiler without a config prints its usage (and exits 1): proves it starts on Windows.
+          $usage = (& .\ps2_recomp.exe 2>&1 | Out-String)
+          if ($usage -match 'Usage: ps2recomp') { Write-Host "PASS ps2_recomp.exe starts" }
+          else { $failed += 'ps2_recomp'; Write-Host "FAIL ps2_recomp.exe: $usage" }
+          if ($failed.Count -gt 0) { Write-Host "Failed: $($failed -join ', ')"; exit 1 }
+          exit 0
+      - name: The launcher's install, folder and bootstrap tests (made-up disc)
+        shell: pwsh
+        working-directory: dist
+        run: |
+          .\dbziw_install_folder_test.exe "$PWD"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          python -B ..\app\tests\bootstrap_test.py --bootstrap DBZIW-bootstrap.exe --child dbziw_install_fake_game.exe --out "$env:RUNNER_TEMP\bootstrap"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          python -B ..\app\tests\launcher_install_test.py --launcher dbziw_launcher_fixture.exe --game dbziw_install_fake_game.exe `
+            --uninstaller dbziw-uninstall.exe --bootstrap DBZIW-bootstrap.exe --out "$env:RUNNER_TEMP\launcher"
+          exit $LASTEXITCODE
+      - uses: actions/download-artifact@v8
+        if: github.event_name != 'pull_request'
+        with:
+          name: windows-package
+          path: package
+      - name: Check the real package and run its tools on Windows
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem package -Filter '*.zip' | Select-Object -First 1
+          Expand-Archive $zip.FullName "$env:RUNNER_TEMP\pkg"
+          $root = Get-ChildItem "$env:RUNNER_TEMP\pkg" | Select-Object -First 1
+          python -B tools/release/verify_package.py --root $root.FullName --platform windows --smoke
+          exit $LASTEXITCODE
+
+  draft:
+    # Reuse the numbered draft until the owner publishes it, then start the next beta.
+    needs: [linux, linux-package, linux-package-check, windows-build, windows-test]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: draft-release
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-package
+          path: dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: linux-package
+          path: dist
+      - name: Update the numbered draft (never publishes)
+        run: python3 tools/release/update_draft.py
