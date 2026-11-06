@@ -3,7 +3,7 @@
 <p align="center"><b>Dragon Ball Z: Infinite World (PS2) as a native PC game, built on your PC from your own disc.</b></p>
 
 <p align="center">
-  <a href="https://github.com/TheSlackbringer/dbziw-port/actions/workflows/build.yml"><img alt="build" src="https://img.shields.io/github/actions/workflow/status/TheSlackbringer/dbziw-port/build.yml?branch=main&label=build&logo=github"></a>
+  <a href="https://github.com/TheSlackbringer/dbziw-recomp/actions/workflows/build.yml"><img alt="build" src="https://img.shields.io/github/actions/workflow/status/TheSlackbringer/dbziw-recomp/build.yml?branch=main&label=build&logo=github"></a>
   <img alt="platform: Windows | Linux" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-0a7bbb">
   <img alt="graphics: Vulkan" src="https://img.shields.io/badge/graphics-Vulkan-ac162c">
   <a href="LICENSE"><img alt="license: GPL-3.0" src="https://img.shields.io/badge/license-GPL--3.0-6a9a1f"></a>
@@ -11,189 +11,88 @@
   <img alt="disc: PAL SLES-55347" src="https://img.shields.io/badge/disc-PAL%20SLES--55347-555">
 </p>
 
-A native PC port of **Dragon Ball Z: Infinite World** for the PlayStation 2, built with PS2Recomp. The game's logic is statically translated into C++; the runtime provides the PS2 hardware services it still needs. Graphics use **Vulkan through paraLLEl-GS**.
-
-**In development.** Windows builds come as a self-building release (below); on Linux the game is built from source for now, a Linux release is planned. Full playability has not been established.
+A native PC port of **Dragon Ball Z: Infinite World** for the PlayStation 2, built with PS2Recomp: the game's code is translated into C++ and runs natively, with graphics on **Vulkan through paraLLEl-GS**. Windows and Linux releases build the game on your PC from your own disc.
 
 > [!IMPORTANT]
-> You need your own legal copy of **Dragon Ball Z: Infinite World** (European PAL, `SLES_553.47`). Nothing from the game is in this repository or in its releases: no disc images, game executables, IRX modules, AFS archives, SFD videos, game assets or translated game code. The game is built on your own PC from your own disc.
+> You need your own legal copy of **Dragon Ball Z: Infinite World** (European PAL, `SLES_553.47`). Nothing from the game is in this repository or in its releases: no disc images, game executables, IRX modules, AFS archives, SFD videos, game assets or translated game code.
 
-## Current progress
+## Status
 
-| Area | State | Details |
-| --- | :---: | --- |
-| Boot and menus | 🚧 | ELF header parsed, recompiler profiling and entry point initialization in bring-up. |
-| 50Hz / 60Hz Mode | 🚧 | In-game PAL60 (59.94 Hz) and PAL50 display rate selection. |
-| Input | 🚧 | Keyboard and gamepad/fightstick input (DirectInput, XInput, DualSense). |
-| Audio & CRI Middleware | 🚧 | `CRI_ADXI.IRX` streaming, `ADX_*.AFS` music and dual JP/EN voices, SPU2 sound effects. |
-| Cutscenes & SFD Video | 🚧 | Sofdec MPEG video playback for `OPENING.SFD`, `ENDING.SFD`, and story cutscenes. |
-| Saves | 🚧 | PS2 Memory Card saving and loading (`mc0/`, `mc1/`). |
-| Combat & 60 FPS Engine | 🚧 | Dimps fighter engine, frame cancel windows, fatigue gauge, and Aura Burst responsiveness. |
-| Dragon Missions / Story | 🚧 | Dragon Missions, minigames (Snake Way, gravity room), and Z-Campaign. |
+**In development.** The game boots, and its menus, music, sound effects, movies and Dragon Duel fights run; the first Dragon Mission has been reached, and the game creates its save on the memory card. It has not been played from start to finish, so expect rough edges: report them in [Issues](https://github.com/TheSlackbringer/dbziw-recomp/issues).
 
-✅ works in tested scenes · 🚧 in development
+**Known issues:**
 
-Extended session stability and higher-resolution scaling performance remain in active development. These results describe tested scenes, not a complete playthrough or a guarantee that every mode works.
+- The opening movie can stall now and then on Windows.
+- Only the 50 Hz mode is available so far; 60 Hz is planned.
+- Two-player play and arcade fightsticks are not finished.
+- Long play sessions have not been tested.
+- There is no in-game settings menu yet: use the function keys below.
 
-## Supported discs
+## What you need
 
-| Game | Version | Executable | Required? |
-| --- | --- | --- | --- |
-| Dragon Ball Z: Infinite World | European PAL | `SLES_553.47` | Yes |
+- **Dragon Ball Z: Infinite World**, European PAL (`SLES_553.47`), as an `.iso`.
+- A 64-bit CPU with AVX2 (Intel since 2013, AMD Ryzen) and a graphics card with a current Vulkan driver; about 10 GB of free space.
+- Windows 10 (1903 or newer) / 11, or Linux with glibc 2.31 or newer.
 
-Other regions and revisions are unsupported (the program checks every file against known checksums). Verification fails when the disc image is missing, modified, or invalid.
+Other regions and revisions are not supported (every file is checked against known checksums).
 
-## Playing on Windows
+## Playing
 
-The release is a **builder**, not a game: it contains our program, the source code, a compiler and the tools, and builds the game on your PC from your own disc. You install nothing else — no Visual Studio, no Python, no Git — and nothing is downloaded while it builds.
+The first release is not out yet; it will be on the [Releases](https://github.com/TheSlackbringer/dbziw-recomp/releases) page. A release contains our program, the source code, a compiler and the tools; nothing else needs to be installed and nothing is downloaded while it builds.
 
-**You need:** Windows 10 (version 1903 or newer) or 11, 64-bit; a CPU with AVX2 (Intel since 2013, AMD Ryzen); a graphics card with a current Vulkan driver; about 10 GB of free space; your disc image as `.iso`.
+- **Windows:** unzip `DBZIW-<version>-windows-x64.zip` and start **`DBZIW.exe`**. It is not signed: if Windows says *"Windows protected your PC"*, choose **More info → Run anyway**.
+- **Linux:** make `DBZIW-RECOMP-<version>-x86_64.AppImage` executable and open it. The file and folder pickers need `zenity` or `kdialog`; without them, type the paths.
 
-1. Download `DBZIW-<version>-windows-x64.zip` from the Releases page and **unzip it close to the drive root**, e.g. `C:\Games\` (the compiler inside has deep folders, and Windows trips over paths longer than 260 characters).
-2. Start **`DBZIW.exe`**. The program is not signed, so Windows may say *"Windows protected your PC"*: choose **More info → Run anyway**.
-3. **First start:** choose your DBZ: Infinite World disc image (Browse, or drag it onto the window) and press **Start**. The disc is checked and copied, the game's code is translated and compiled for your PC — about **5–10 minutes** once. Then the game starts.
-4. **Every later start:** `DBZIW.exe` starts the game at once. A newer release rebuilds once, without asking for the disc again.
+**First start:** choose your disc image and press **Continue**, choose where to install it (`C:\Games\DBZIW-Recomp` or `~/Games/DBZIW-Recomp` is filled in), and press **Install & Play**. The disc is checked, and the game is translated and compiled for your PC: a few minutes, once, longer on older PCs. You can then delete the download. Every later start of the installed `DBZIW.exe` or `DBZIW.AppImage` opens the game directly.
 
-Your game files, the built game, saves, settings and logs are in `%LOCALAPPDATA%\DBZIW`. Replacing the release folder with a newer version keeps them. If something goes wrong, the logs are in `%LOCALAPPDATA%\DBZIW\logs` (`setup.log`, `build.log`, `game.log`); please attach them to an issue.
+**Updating:** open the new release. It finds your installation and offers **Update & Play**, without asking for the disc again, and keeps your saves.
 
-## Playing on Linux
+**Saves and settings:** the install page lets you keep them on this PC (recommended) or with the game (portable).
 
-A Linux release (an AppImage with the same self-building wizard) is planned. Until then, build from source as described below; `dbziw_setup` (built with the game) offers the same wizard window for building from your own disc.
+| | Saves | Settings |
+| --- | --- | --- |
+| **On this PC, Windows** | `%LOCALAPPDATA%\DBZIW\user-data` | `%LOCALAPPDATA%\DBZIW\config` |
+| **On this PC, Linux** | `~/.local/share/dbziw/user-data` | `~/.config/dbziw/config` |
+| **Portable** | `dbziw-data/user-data` in the install folder | the same folder |
 
-## Building on Linux
+**Manage installation:** hold Shift while starting `DBZIW.exe`, or start `DBZIW.exe` or the AppImage with `--manage`. Close the game first. From there you can change where saves live, copy the installation to another drive or PC, or uninstall the game and choose whether to keep your saves.
 
-Run the following from the repository root. You need an x86-64 CPU supporting x86-64-v3, Clang, lld, CMake 3.21 or newer, Ninja, Git, rsync, pkg-config, Vulkan drivers, and development packages for FFmpeg, the window system and audio. FFmpeg must provide `libavcodec`, `libavformat`, `libavutil`, `libswresample` and `libswscale`. CMake may download other build dependencies during configuration.
+If something goes wrong, please attach the files from the `dbziw-data/logs` folder in your install folder to an issue.
 
-### 1. Prepare your disc files
+## Controls
 
-Extract your retail PAL disc into `game/`, preserving its directory structure. For example, using `bsdtar`:
+| Keyboard | PS2 input |
+| --- | --- |
+| Arrow keys | D-pad |
+| W A S D | Left stick (free flight ignores the D-pad) |
+| X or Space / C or Esc | Cross / Circle |
+| Z or Numpad 0 / V or Numpad 1 | Square / Triangle |
+| Q / E | L1 / R1 |
+| Left Shift / Right Shift | L2 / R2 |
+| Enter / Tab | Start / Select |
 
-```sh
-mkdir -p game
-bsdtar -xf "/path/to/your/dbz-infinite-world.iso" -C game
-```
+Gamepads work too.
 
-`SLES_553.47`, `SYSTEM.CNF`, `MODULES/`, and `USR/` must be in that directory. Keep all extracted assets; the executable alone is insufficient.
-
-### 2. Generate the native game code
-
-```sh
-CC=clang CXX=clang++ cmake -S external/PS2Recomp -B external/PS2Recomp/build -G Ninja \
-  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-  -DPS2X_BUILD_RUNTIME=OFF -DPS2X_BUILD_ANALYZER=OFF \
-  -DPS2X_BUILD_TEST=OFF -DPS2X_BUILD_STUDIO=OFF
-cmake --build external/PS2Recomp/build --target ps2_recomp
-tools/regen.sh all
-```
-
-This generates the main executable translations locally. Ghidra is used for reverse engineering; the existing function maps support this generation step without creating a new Ghidra project.
-
-### 3. Prepare the Vulkan renderer
-
-The wrapper expects the pinned paraLLEl-GS revision below and its required submodules:
-
-```sh
-git clone https://github.com/Arntzen-Software/parallel-gs.git app/deps/parallel-gs
-git -C app/deps/parallel-gs checkout cc6184af7e0c03da603045ca371ffa5dae9b0655
-git -C app/deps/parallel-gs submodule update --init Granite
-git -C app/deps/parallel-gs/Granite submodule update --init \
-  third_party/volk third_party/khronos/vulkan-headers
-```
-
-Then apply this project's renderer patches (internal resolution scaling and anti-aliasing):
-
-```sh
-git -C app/deps/parallel-gs apply "$PWD"/vendor/parallel-gs-patches/*.patch
-```
-
-If that checkout already exists, reuse it after verifying the revision.
-
-### 4. Build the application
-
-```sh
-CC=clang CXX=clang++ cmake -S app -B app/build -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release -DCMAKE_LINKER_TYPE=LLD \
-  -DPS2X_ENABLE_VULKAN_GS=ON \
-  -DPS2X_PARALLEL_GS_SOURCE_DIR="$PWD/app/deps/parallel-gs" \
-  -DPS2X_ENABLE_AGRESSIVE_LOGS=OFF
-cmake --build app/build --target dbziw
-```
-
-The verbose per-function logging option is disabled here because it substantially slows gameplay.
-
-## Running and controls
-
-```sh
-cd game
-PS2X_GS_BACKEND=vulkan ../app/build/dbziw ./SLES_553.47
-```
-
-In this developer setup, saves are stored in `game/mc0/`. Keep that directory when updating your build. (The Windows release keeps everything in `%LOCALAPPDATA%\DBZIW` instead.)
-
-### Controls
-
-| Keyboard | Gamepad / Fightstick | PS2 input | Action |
-| --- | --- | --- | --- |
-| Enter | Start | Start | Pause / Start |
-| Tab | Select | Select | Select / Taunt |
-| Z | Square (X) | Square | Punch |
-| V | Triangle (Y) | Triangle | Kick |
-| X or Space | Cross (A) | Cross | Guard / Evade / Cancel |
-| C | Circle (B) | Circle | Ki Blast |
-| Q | L1 (LB) | L1 | Aura Burst / Dragon Dash |
-| E | R1 (RB) | R1 | Skill / Capsule Select |
-| Left Shift | L2 (LT) | L2 | Transformation / Charge |
-| Right Shift | R2 (RT) | R2 | Capsule Activate |
-| Arrow keys or WASD | D-pad / Left Stick | D-pad | Movement |
-
-Gamepads and arcade fightsticks are supported out of the box.
-
-### Function keys and display
+### Function keys
 
 | Key | Description |
 | --- | --- |
-| **F1** | Runtime debugger (developer builds; off in release unless `PS2X_DEBUG_UI=1`). |
-| **F2** | Toggle build ID and game tick HUD overlay (useful for bug reports and log alignment). |
-| **F3** | Toggle real game FPS, VSync rate, resolution scale, and AA sample HUD counter. |
-| **F4** | Cycle internal resolution scale live ($1\times \to 2\times \to 4\times$) and persist to `dbziw.ini`. |
-| **F5** | Cycle anti-aliasing sample multiplier ($1\times \to 2\times \to 4\times \to 8\times \to 16\times$) and persist to `dbziw.ini`. |
-| **F9** | Discs window (release build): disc verification and file diagnostics. |
+| **F1** | Runtime debugger, for developers. |
+| **F2** | Show or hide the build ID and game tick (for bug reports). |
+| **F3** | Show or hide the frame rate. |
+| **F4** | Cycle the resolution (1× → 2× → 4×). |
+| **F5** | Cycle anti-aliasing (1× → 2× → 4× → 8× → 16×). |
 
-You can also pass environment variables on startup: `PS2X_FPS=1` enables the F3 overlay by default, `PS2X_GS_SCALE=1|2|4` sets the startup resolution scale, and `PS2X_GS_SSAA=1|2|4|8|16` sets the anti-aliasing sample count (defaults can be kept at `1` when profiling performance).
+The resolution and anti-aliasing choices are remembered in `dbziw.ini`, in your settings folder.
 
-## Development
+## Building from source
 
-Fixes live in handwritten app/runtime code, recompiler profiles and generation tools. Original disc files remain unchanged; generated translations are regenerated rather than edited by hand.
-
-| Path | Contents |
-| --- | --- |
-| `app/` | Application, native bridges, controller input, and regression tests |
-| `recomp/` | PAL profiles (`dbz_iw.toml`), function maps (`ghidra_functions.csv`), generated output |
-| `tools/` | Code generation (`regen.sh`), Ghidra scripts, PCSX2 reference runner, debugging tools |
-| `external/PS2Recomp/` | Vendored runtime and recompiler with maintained modifications |
-| `vendor/runtime-patches/` | Runtime patch provenance |
-| `licenses/` | Third-party notices |
-
-Game data, analysis databases, generated output, builds and local research notes are excluded from Git. Contributor and coding-agent workflows are described in `AGENTS.md` and `CLAUDE.md`.
-
-Current priorities are entry point bring-up, PAL60/PAL50 cadence handling, CRI ADX/Sofdec playback, and initial battle rendering.
-
-### Making a release
-
-Releases contain only our code and freely licensed tools — never the compiled game, disc files, an ISO or translated code (PS2Recomp is GPL-3.0; see `AGENTS.md`). On a clean commit, after the full test suite:
-
-```sh
-cmake --build app/build-release-win --target dbziw_setup     # the launcher, cross-compiled with llvm-mingw
-cmake --build build-recomp-win --target ps2_recomp          # the recompiler for Windows
-tools/release/make_release.py windows --build app/build-release-win --recomp-build build-recomp-win
-```
-
-The script refuses a dirty tree, packs the launcher, sources, compiler (llvm-mingw for Windows), CMake, Ninja, the minimal FFmpeg and the licenses, scans the package for anything from the game, and writes the zip and its SHA-256 to `dist/`. Publishing is done by the maintainer.
+See [BUILDING.md](BUILDING.md) for building on Linux from source, the developer tools and making a release.
 
 ## License and attribution
 
 The port's own source and tools are licensed under GPL-3.0; see [LICENSE](LICENSE). This license grants no rights to the original game or its assets.
 
-The vendored [PS2Recomp](https://github.com/ran-j/PS2Recomp) runtime and recompiler are modified versions of the upstream project by ran-j and contributors. Third-party code retains its applicable licenses; see `THIRD_PARTY.md` and accompanying notices.
+The vendored [PS2Recomp](https://github.com/ran-j/PS2Recomp) runtime and recompiler are modified versions of the upstream project by ran-j and contributors. Revision and maintenance details are in [DBZIW_VENDORED.md](external/PS2Recomp/DBZIW_VENDORED.md). Third-party code retains its applicable licenses; see [THIRD_PARTY.md](THIRD_PARTY.md) and the accompanying notices.
 
 Dragon Ball, Dragon Ball Z, and related characters are trademarks and copyrights of Bird Studio / Shueisha / Toei Animation. Dragon Ball Z: Infinite World is developed by Dimps and published by Atari / Bandai Namco Games. This non-profit fan preservation project is not affiliated with, endorsed by, or sponsored by Dimps, Atari, Bandai Namco Games, Bird Studio, Shueisha, or Toei Animation.

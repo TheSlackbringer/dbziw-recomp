@@ -337,7 +337,7 @@ if(NOT WIN32 AND TARGET dbziw_gsrec) # drives the tools through a POSIX shell (e
              $<TARGET_FILE:dbziw_gsrec> "${CMAKE_CURRENT_BINARY_DIR}/gsreplay_test")
 endif()
 
-# Game executable (when generated sources exist). ON by default, as in DW5 (6ee9b0b): normal builds and the README
+# Game executable (when generated sources exist). ON by default, as in DW5 (6ee9b0b): normal builds and the BUILDING.md
 # steps get the game; OFF builds only what needs no game data (CI).
 option(DBZIW_BUILD_GAME "Build the game (needs locally generated code)" ON)
 if(DBZIW_BUILD_GAME)

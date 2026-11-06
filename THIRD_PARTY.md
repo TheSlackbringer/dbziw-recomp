@@ -12,7 +12,7 @@ The maintained DBZIW port source and tools are distributed under the GNU General
 ## paraLLEl-GS renderer and its patches
 
 - [paraLLEl-GS](https://github.com/Arntzen-Software/parallel-gs), by Arntzen Software AS (Hans-Kristian Arntzen): LGPL-3.0-or-later (its `COPYING.LGPLv3`). It is not vendored: the build clones the revision pinned in `README.md` into `app/deps/parallel-gs`. Its [Granite](https://github.com/Themaister/Granite) submodule, by Hans-Kristian Arntzen: MIT.
-- `vendor/parallel-gs-patches/` holds the port's changes to paraLLEl-GS files (applied in order after the clone, see `README.md`); paraLLEl-GS's license applies to them.
+- `vendor/parallel-gs-patches/` holds the port's changes to paraLLEl-GS files (applied in order after the clone, see `BUILDING.md`); paraLLEl-GS's license applies to them.
 
 ## Notices for incorporated MIT portions
 

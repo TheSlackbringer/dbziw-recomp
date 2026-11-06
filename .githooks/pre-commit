@@ -10,7 +10,7 @@ if [ -n "$bad" ]; then
     exit 1
 fi
 
-# The renderer patches must apply in order on the pinned paraLLEl-GS revision (README.md), exactly as a fresh
+# The renderer patches must apply in order on the pinned paraLLEl-GS revision (BUILDING.md), exactly as a fresh
 # checkout applies them: git apply vendor/parallel-gs-patches/*.patch. Checked when a patch is staged or the
 # pinned revision changes.
 pgs_repo=app/deps/parallel-gs
@@ -18,13 +18,13 @@ pin() { sed -n 's#^git -C app/deps/parallel-gs checkout \([0-9a-f]\{40\}\)\r\{0,
 nl=$'\n'
 patches_staged=; pin_changed=
 [[ "$nl$staged" == *"${nl}vendor/parallel-gs-patches/"* ]] && patches_staged=1
-if [[ "$nl$staged$nl" == *"${nl}README.md$nl"* ]]; then
-    [ "$(git show :README.md 2>/dev/null | pin)" != "$(git show HEAD:README.md 2>/dev/null | pin)" ] && pin_changed=1
+if [[ "$nl$staged$nl" == *"${nl}BUILDING.md$nl"* ]]; then
+    [ "$(git show :BUILDING.md 2>/dev/null | pin)" != "$(git show HEAD:BUILDING.md 2>/dev/null | pin)" ] && pin_changed=1
 fi
 if [ -n "$patches_staged" ] || [ -n "$pin_changed" ]; then
-    pgs_rev=$(git show :README.md 2>/dev/null | pin)
+    pgs_rev=$(git show :BUILDING.md 2>/dev/null | pin)
     if [ -z "$pgs_rev" ]; then
-        echo "Commit blocked: README.md has no 'git -C app/deps/parallel-gs checkout <revision>' line." >&2
+        echo "Commit blocked: BUILDING.md has no 'git -C app/deps/parallel-gs checkout <revision>' line." >&2
         exit 1
     fi
     if ! git -C "$pgs_repo" cat-file -e "$pgs_rev^{commit}" 2>/dev/null; then

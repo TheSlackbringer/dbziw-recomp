@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 env:
-  PARALLEL_GS_REV: cc6184af7e0c03da603045ca371ffa5dae9b0655 # README, "pinned paraLLEl-GS"
+  PARALLEL_GS_REV: cc6184af7e0c03da603045ca371ffa5dae9b0655 # BUILDING.md, "pinned paraLLEl-GS"
   LLVM_MINGW: llvm-mingw-20261006-ucrt-ubuntu-22.04-x86_64
   FFMPEG_ZIP: ffmpeg-n7.1-241205-lgpl-amd64-shared.zip
 

@@ -16,7 +16,7 @@ markers and of the fixture's `truth.json`).
 | `fixture/profile_fixture.cpp` | Known-behaviour test program |
 | `windows/` | Setup guide, recording profile, protected script, filter, helpers (copied to the protected folder by setup) |
 
-The diagnostic build (markers, frame pointers, a PDB on Windows) has its own folder, configured like README's
+The diagnostic build (markers, frame pointers, a PDB on Windows) has its own folder, configured like BUILDING.md's
 `app/build` plus one option (without `-DCMAKE_LINKER_TYPE=LLD` the runtime archive does not link):
 
 ```sh
