@@ -7,7 +7,7 @@
   <img alt="platform: Windows | Linux" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-0a7bbb">
   <img alt="graphics: Vulkan" src="https://img.shields.io/badge/graphics-Vulkan-ac162c">
   <a href="LICENSE"><img alt="license: GPL-3.0" src="https://img.shields.io/badge/license-GPL--3.0-6a9a1f"></a>
-  <img alt="status: in development" src="https://img.shields.io/badge/status-in%20development-e6a200">
+  <img alt="status: playable (beta)" src="https://img.shields.io/badge/status-playable%20(beta)-e6a200">
   <img alt="disc: PAL SLES-55347" src="https://img.shields.io/badge/disc-PAL%20SLES--55347-555">
 </p>
 
@@ -18,7 +18,7 @@ A native PC port of **Dragon Ball Z: Infinite World** for the PlayStation 2, bui
 
 ## Status
 
-**In development.** The game boots, and its menus, music, sound effects, movies and Dragon Duel fights run; the first Dragon Mission has been reached, and the game creates its save on the memory card. It has not been played from start to finish, so expect rough edges: report them in [Issues](https://github.com/TheSlackbringer/dbziw-recomp/issues).
+**Beta: playable.** The game boots, and its menus, music, sound effects, movies and Dragon Duel fights run; the first Dragon Mission has been reached, and the game creates its save on the memory card. It has not been played from start to finish, so expect rough edges: report them in [Issues](https://github.com/TheSlackbringer/dbziw-recomp/issues).
 
 **Known issues:**
 
@@ -38,7 +38,7 @@ Other regions and revisions are not supported (every file is checked against kno
 
 ## Playing
 
-The first release is not out yet; it will be on the [Releases](https://github.com/TheSlackbringer/dbziw-recomp/releases) page. A release contains our program, the source code, a compiler and the tools; nothing else needs to be installed and nothing is downloaded while it builds.
+Download the latest release from the [Releases](https://github.com/TheSlackbringer/dbziw-recomp/releases) page. It contains our program, the source code, a compiler and the tools; nothing else needs to be installed and nothing is downloaded while it builds.
 
 - **Windows:** unzip `DBZIW-<version>-windows-x64.zip` and start **`DBZIW.exe`**. It is not signed: if Windows says *"Windows protected your PC"*, choose **More info → Run anyway**.
 - **Linux:** make `DBZIW-RECOMP-<version>-x86_64.AppImage` executable and open it. The file and folder pickers need `zenity` or `kdialog`; without them, type the paths.
