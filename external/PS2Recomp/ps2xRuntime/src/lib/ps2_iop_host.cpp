@@ -223,6 +223,11 @@ bool PS2IopHostAdapter::normalizeIopAddress(uint32_t address, uint32_t &normaliz
     return true;
 }
 
+void PS2IopHostAdapter::rpcCompleted(uint64_t token)
+{
+    m_runtime.onIopRpcCompleted(token);
+}
+
 uint32_t PS2IopHostAdapter::allocateIopHandle(ps2x::iop::IopHandleKind kind)
 {
     uint8_t *const rdram = m_activeRdram
@@ -400,7 +405,7 @@ bool PS2IopHostAdapter::readHostFile(uint64_t handle,
 
     bytesRead = size == 0u
                     ? 0u
-                    : std::fread(destination, 1u, size, it->second.stream);
+                    : (ps2x::iop::IopHostIoTimer{}, std::fread(destination, 1u, size, it->second.stream));
     if (bytesRead < size && std::ferror(it->second.stream))
     {
         std::clearerr(it->second.stream);

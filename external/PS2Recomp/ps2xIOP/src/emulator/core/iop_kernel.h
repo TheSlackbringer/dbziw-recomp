@@ -74,6 +74,22 @@ namespace ps2x::iop::detail
         void terminateThreadsInRange(uint32_t base, uint32_t size);
 
         [[nodiscard]] size_t threadCount() const noexcept { return m_threads.size(); }
+        // DW5 009 v4.5 (015): an IOP thread could run now (Ready, Running, or a delay that has ended).
+        [[nodiscard]] bool hasRunnableThread(uint64_t currentCycle) const noexcept
+        {
+            for (const IopThread *thread : m_threadList)
+                if (thread->state == IopThreadState::Ready || thread->state == IopThreadState::Running ||
+                    (thread->state == IopThreadState::Delay && thread->wakeCycle <= currentCycle))
+                    return true;
+            return false;
+        }
+        // DW5 009 v4.4 (015, design 1a): the RPC bridge runs EE requests in the module's own RPC thread.
+        [[nodiscard]] int currentThreadId() const noexcept { return m_currentThread ? m_currentThread->id : 0; }
+        [[nodiscard]] IopThread *findThread(int id) noexcept
+        {
+            const auto it = m_threads.find(id);
+            return it == m_threads.end() ? nullptr : &it->second;
+        }
         void dumpThreads(uint64_t cycle) const; // DBZIW-DEBUG (issue 020): PS2X_IOP_THREAD_TRACE
 
         // Runs other IOP threads for one scheduling slice on behalf of guest code executing outside

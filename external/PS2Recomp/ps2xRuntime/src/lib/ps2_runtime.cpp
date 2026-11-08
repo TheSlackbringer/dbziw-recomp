@@ -993,7 +993,12 @@ namespace ps2x_dev
                 writePng(dumpDir() + "/final.png");
                 if (const char *t = std::getenv("PS2X_THREADS_AT_EXIT"); t && *t && *t != '0')
                     writeThreads(std::cerr, runtime);
-                std::cerr << "[dev] exit tick " << tick << " reached" << std::endl;
+                // DW5 023 amendment 8M (5ea20d5): the exit field that was asked for; the window loop can first see a later one
+                // when its frame was late (then named too).
+                if (tick == exitTick)
+                    std::cerr << "[dev] exit tick " << exitTick << " reached" << std::endl;
+                else
+                    std::cerr << "[dev] exit tick " << exitTick << " reached (window at " << tick << ")" << std::endl;
                 ps2x::device::quiesceAll(std::chrono::milliseconds(2000));
                 ps2prof::flush(); // DBZIW-DEBUG issue 010: _Exit skips atexit
                 GSTrace::shutdown();
@@ -1514,6 +1519,36 @@ ps2x::iop::RpcResult PS2Runtime::handleIopRpc(uint8_t *rdram, R5900Context *ctx,
     auto scope = m_iopHost->enterCall(ctx, rdram);
     request.callToken = scope.token();
     return m_iopSubsystem->handleRpc(request);
+}
+
+uint64_t PS2Runtime::startIopRpc(uint8_t *rdram, R5900Context *ctx, ps2x::iop::RpcRequest request)
+{
+    auto scope = m_iopHost->enterCall(ctx, rdram);
+    request.callToken = scope.token();
+    return m_iopSubsystem->startRpc(request);
+}
+
+bool PS2Runtime::iopBusy() const noexcept
+{
+    return m_iopSubsystem->busy();
+}
+
+bool PS2Runtime::iopRpcInFlight() const noexcept
+{
+    return m_iopSubsystem->rpcInFlight();
+}
+
+void PS2Runtime::syncIopToHostClock() noexcept
+{
+    m_iopSubsystem->runToHostClock();
+}
+
+void PS2Runtime::onIopRpcCompleted(uint64_t token)
+{
+    // Called on the executor while the IOP runs (EE cycle accounting); the EE side finishes the call at its next
+    // event service, outside guest code.
+    if (m_eeScheduler)
+        m_eeScheduler->postEvent(EeEvent{EeEventType::IopRpcComplete, 0u, token});
 }
 
 void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransfer &transfer)

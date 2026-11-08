@@ -3,6 +3,7 @@
 #include "runtime/ps2_deterministic.h"
 #include "runtime/ee_scheduler.h"
 #include "runtime/ps2_symbols.h"
+#include "ps2x/iop/iop_subsystem.h" // kIopHostClockPollEeCycles (DW5 009 v4.4, 015)
 
 #include "ps2_log.h"
 #include "ps2_runtime_macros.h"
@@ -59,6 +60,9 @@ namespace
         return std::chrono::nanoseconds(pal ? 20000000 : 16683333);
     }
     constexpr auto kVBlankDuration = std::chrono::microseconds(500);
+    // DW5 009 v4.4 (015)/v4.5 (design 1a): while the IOP has work (a request or a runnable thread), the scheduler's waits end after this many EE
+    // cycles so the IOP catches up in its own steps (ps2xIOP's host-clock poll) between the fields.
+    constexpr uint64_t kIopRpcSliceEeCycles = ps2x::iop::kIopHostClockPollEeCycles;
     constexpr uint64_t kAlarmTickMicroseconds = 64u;
     constexpr uint32_t kDebugPublishDispatchInterval = 4096u;
 
@@ -1393,6 +1397,12 @@ bool EeScheduler::hasInvocation(GuestInvocationKind kind, uint64_t tag) const
                        });
 }
 
+bool EeScheduler::insideInvocation() const
+{
+    const GuestThread *owner = currentThread();
+    return owner && !owner->invocations.empty();
+}
+
 uint32_t EeScheduler::invocationStackTop()
 {
     assertExecutor();
@@ -2239,7 +2249,13 @@ void EeScheduler::processDueDeadlines()
             if (now < pacingDeadline)
             {
                 markStallStep(StallStep::DeadlineWait); // DBZIW-DEBUG (issue 020)
-                m_eventCv.wait_until(lock, pacingDeadline, [this]()
+                // DW5 009 v4.4/v4.5 (015, design 1a): while the IOP has work, wait in its host-clock steps and let it
+                // catch up between them, so its work does not land in one piece after the wait. Not in the
+                // deterministic mode (022): no host clock there, and the IOP follows guest cycles.
+                const bool iopBusy = !deterministic && m_runtime.iopBusy();
+                const auto waitUntil = iopBusy ? std::min(pacingDeadline, now + eeCyclesToHostDuration(kIopRpcSliceEeCycles))
+                                               : pacingDeadline;
+                m_eventCv.wait_until(lock, waitUntil, [this]()
                                      { return !m_events.empty() ||
                                               m_stopRequested.load(std::memory_order_acquire); });
                 markStallStep(StallStep::Deadlines); // DBZIW-DEBUG (issue 020)
@@ -2247,6 +2263,12 @@ void EeScheduler::processDueDeadlines()
                 {
                     updateNextDeadline();
                     return;
+                }
+                if (iopBusy && std::chrono::steady_clock::now() < pacingDeadline)
+                {
+                    lock.unlock();
+                    m_runtime.syncIopToHostClock();
+                    continue;
                 }
             }
 
@@ -2292,7 +2314,7 @@ void EeScheduler::processDueDeadlines()
                     const auto lateUs = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - scheduled.hostDeadline).count();
                     if (on && lateUs > 3000) {
                         const auto gapUs = g_prevDeadlineService == std::chrono::steady_clock::time_point{} ? -1 : std::chrono::duration_cast<std::chrono::microseconds>(g_lastDeadlineService - g_prevDeadlineService).count();
-                        std::fprintf(stderr, "[late-vblank] tick=%llu late=%lldus serviceGap=%lldus thread=%u\n", (unsigned long long)(m_vsyncTick + 1u), (long long)lateUs, (long long)gapUs, m_currentThreadId);
+                        std::fprintf(stderr, "[late-vblank] tick=%llu late=%lldus serviceGap=%lldus thread=%u now=%.3f\n", (unsigned long long)(m_vsyncTick + 1u), (long long)lateUs, (long long)gapUs, m_currentThreadId, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count());
                     }
                 }
                 // Keep host fields on a fixed cadence so small wake-up lateness
@@ -2432,6 +2454,10 @@ void EeScheduler::processEvent(const EeEvent &event)
         break;
     case EeEventType::Dmac:
         break;
+    case EeEventType::IopRpcComplete: // DW5 009 v4.4, 015 (design 1a)
+        if (m_iopRpcCompletion)
+            m_iopRpcCompletion(event.value);
+        break;
     case EeEventType::Alarm:
     {
         auto it = m_alarms.find(static_cast<int>(event.id));
@@ -2560,6 +2586,18 @@ void EeScheduler::waitForEvent()
         }
     }
 
+    // DW5 009 v4.4 (015)/v4.5 (design 1a): while the IOP has work (in IOP time, on this thread) it advances in
+    // the IOP's own host-clock steps instead of in one catch-up after the wait, so the next field is not delayed.
+    if (m_runtime.iopBusy())
+    {
+        const auto sliceDeadline = std::chrono::steady_clock::now() + eeCyclesToHostDuration(kIopRpcSliceEeCycles);
+        // Issue 022: the deterministic mode picks by guest cycles, as for the timer above.
+        if (ps2x::deterministicMode() ? m_eeCycle + kIopRpcSliceEeCycles < deadlineCycle : sliceDeadline < hostDeadline)
+        {
+            deadlineCycle = m_eeCycle + kIopRpcSliceEeCycles;
+            hostDeadline = sliceDeadline;
+        }
+    }
     const bool signaled = m_eventCv.wait_until(lock, hostDeadline, [this]()
                                                { return !m_events.empty() ||
                                                         m_stopRequested.load(std::memory_order_acquire); });

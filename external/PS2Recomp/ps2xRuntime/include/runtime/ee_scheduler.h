@@ -240,6 +240,7 @@ enum class EeEventType : uint8_t
     Dmac,
     ExternalWake,
     Alarm,
+    IopRpcComplete, // DW5 009 v4.4, 015 (design 1a): value = the request's token
 };
 
 struct EeEvent
@@ -326,6 +327,8 @@ public:
     [[noreturn]] void invokeCurrent(GuestInvocation invocation);
     [[noreturn]] void invokeCurrentSequence(std::vector<GuestInvocation> invocations);
     [[nodiscard]] bool hasInvocation(GuestInvocationKind kind, uint64_t tag) const;
+    // DW5 009 v4.4 (015): the current thread runs an invocation (interrupt, callback, alarm ...), where it must not block.
+    [[nodiscard]] bool insideInvocation() const;
     [[nodiscard]] uint32_t invocationStackTop();
 
     int addIrqHandler(bool dmac,
@@ -343,6 +346,9 @@ public:
     [[nodiscard]] uint64_t currentVSyncTick() const noexcept;
     void stepVSyncTicksForTesting(uint64_t ticks = 1) noexcept;
     uint64_t waitForNextPresentationField(uint64_t &lastTick) const;
+    // DW5 009 v4.4 (015, design 1a): called at an event service (executor, outside guest code) with the token of an EE
+    // request whose IOP part has ended.
+    void setIopRpcCompletionHandler(std::function<void(uint64_t)> handler) { m_iopRpcCompletion = std::move(handler); }
     uint32_t setGsVSyncCallback(uint32_t callback, uint32_t gp, uint32_t sp);
 
     [[noreturn]] void waitVSync(uint64_t afterTick, int fixedResult = -1, std::function<void(R5900Context &)> completion = {});
@@ -476,6 +482,8 @@ private:
     std::atomic<uint64_t> m_presentationTick{0};
     mutable std::mutex m_presentationMutex;
     mutable std::condition_variable m_presentationCv;
+    // DW5 009 v4.4 (015, design 1a): finishes an EE request whose IOP part has ended (RPC.cpp registers it).
+    std::function<void(uint64_t)> m_iopRpcCompletion;
     std::atomic<bool> m_palVideoMode{false};
     uint32_t m_vsyncFlagAddress = 0;
     uint32_t m_vsyncTickAddress = 0;

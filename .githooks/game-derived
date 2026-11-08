@@ -21,6 +21,7 @@
 # C++ generated or lifted from the game's code and microcode
 ^recomp/(.*/)?output/
 ^recomp/(.*/)?vu[01]/
+^recomp/(.*/)?iop/
 vu[01]_lifted\.cpp$
 
 # The local notes (their own repository): evidence, test output, logs

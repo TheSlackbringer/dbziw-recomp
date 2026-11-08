@@ -59,6 +59,11 @@ add_custom_command(OUTPUT "${DBZIW_SETUP_GENERATED}/vu_producer.h"
     DEPENDS dbziw_vu_generator $<TARGET_OBJECTS:dbziw_vu_generator> "${CMAKE_CURRENT_SOURCE_DIR}/cmake/vu_producer.cmake"
     VERBATIM)
 add_custom_target(dbziw_vu_identity DEPENDS "${DBZIW_SETUP_GENERATED}/vu_producer.h")
+# DW5 009 v4.5 (015): the IOP module translator (used by dbziw_ioplift and the setup pipeline).
+add_library(dbziw_iop_translator OBJECT setup/ioplift/iop_translator.cpp setup/ioplift/iop_generate.cpp)
+target_include_directories(dbziw_iop_translator PUBLIC setup/ioplift "${PS2RECOMP_DIR}/ps2xIOP/include"
+    PRIVATE "${PS2RECOMP_DIR}/ps2xIOP/src")
+target_link_libraries(dbziw_iop_translator PRIVATE ps2_iop)
 add_library(dbziw_setup_core STATIC
     setup/iso9660.cpp
     setup/disc_setup.cpp
@@ -73,16 +78,22 @@ add_library(dbziw_setup_core STATIC
     setup/installation.cpp
     setup/uninstall_process.cpp
     $<TARGET_OBJECTS:dbziw_vu_generator>
+    $<TARGET_OBJECTS:dbziw_iop_translator>
 )
 add_dependencies(dbziw_setup_core dbziw_vu_identity)
 target_include_directories(dbziw_setup_core PRIVATE "${DBZIW_SETUP_GENERATED}")
 target_include_directories(dbziw_setup_core PUBLIC setup)
-target_link_libraries(dbziw_setup_core PUBLIC ffmpeg Threads::Threads)
+target_link_libraries(dbziw_setup_core PUBLIC ffmpeg Threads::Threads ps2_iop)
 # VU1 translator (issue 012; DW5 025 Step 6, 5442b4a): dbziw_vu1lift <SLES_553.47> <output.cpp> translates the game's
 # VU1 microprograms; dbziw_vu1lift --find-range <image> <pc> <name> [disc files] prints the vu1_inputs.h entries for
 # a program seen in a PS2X_VU1_CENSUS run.
 add_executable(dbziw_vu1lift setup/vu1lift/vu1lift_main.cpp)
 target_link_libraries(dbziw_vu1lift PRIVATE dbziw_setup_core)
+# DW5 009 v4.5 (015): IOP module translator: dbziw_ioplift <MODULES folder> <output folder> (game-derived output);
+# dbziw_ioplift --raw <code.bin> <base hex> <name> <output folder> for the translator test.
+add_executable(dbziw_ioplift setup/ioplift/ioplift_main.cpp $<TARGET_OBJECTS:dbziw_iop_translator>)
+target_include_directories(dbziw_ioplift PRIVATE setup/ioplift "${PS2RECOMP_DIR}/ps2xIOP/include")
+target_link_libraries(dbziw_ioplift PRIVATE ps2_iop)
 
 # The wizard's window (raylib + imgui) and no-window run.
 add_library(dbziw_setup_ui STATIC
@@ -160,11 +171,11 @@ set(DBZIW_FIXTURE_DISC DBZIW_TEST_DISC_MANIFEST="${CMAKE_CURRENT_SOURCE_DIR}/tes
 add_executable(dbziw_launcher_fixture WIN32 tests/launcher_fixture.cpp setup/wizard_main.cpp setup/wizard_console.cpp setup/wizard_storage.cpp
     setup/iso9660.cpp setup/disc_setup.cpp setup/run_process.cpp setup/codegen.cpp setup/build_game.cpp setup/install_state.cpp setup/setup_layout.cpp
     setup/setup_pipeline.cpp setup/setup_cache.cpp setup/install_location.cpp setup/installation.cpp setup/uninstall_process.cpp
-    $<TARGET_OBJECTS:dbziw_vu_generator>)
+    $<TARGET_OBJECTS:dbziw_vu_generator> $<TARGET_OBJECTS:dbziw_iop_translator>)
 add_dependencies(dbziw_launcher_fixture dbziw_vu_identity)
 target_compile_definitions(dbziw_launcher_fixture PRIVATE ${DBZIW_FIXTURE_DISC})
 target_include_directories(dbziw_launcher_fixture PRIVATE setup "${DBZIW_SETUP_GENERATED}")
-target_link_libraries(dbziw_launcher_fixture PRIVATE ffmpeg Threads::Threads)
+target_link_libraries(dbziw_launcher_fixture PRIVATE ffmpeg Threads::Threads ps2_iop)
 add_executable(dbziw_install_fake_game WIN32 tests/install_fake_game.cpp setup/install_location.cpp)
 target_include_directories(dbziw_install_fake_game PRIVATE setup)
 add_executable(dbziw_install_location_test tests/install_location_test.cpp)
@@ -373,7 +384,51 @@ if(DBZIW_BUILD_GAME)
         else()
             message(STATUS "No translated VU1 code (run tools/regen.sh); VU1 microcode will be interpreted")
         endif()
+        # DW5 009 v4.5 (015): the game's IOP modules translated to C++ (dbziw_ioplift: tools/regen.sh, the setup) into the
+        # ignored recomp/iop/ folder. Game-derived: never committed. Without it, IOP code runs in the interpreter.
+        file(GLOB DBZIW_IOP_NATIVE_SOURCES CONFIGURE_DEPENDS "${DBZIW_RECOMP_ROOT}/iop/*.cpp")
+        if(DBZIW_IOP_NATIVE_SOURCES)
+            target_sources(dbziw PRIVATE ${DBZIW_IOP_NATIVE_SOURCES})
+            set_source_files_properties(${DBZIW_IOP_NATIVE_SOURCES} PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON
+                SKIP_PRECOMPILE_HEADERS ON)
+        else()
+            message(STATUS "No translated IOP modules (run tools/regen.sh); IOP code will be interpreted")
+        endif()
     endif()
+    # DW5 009 v4.5 (015): the IOP translator against the interpreter, on our own test program (translated at build time).
+    add_executable(dbziw_ioplift_testgen tests/ioplift_testgen.cpp)
+    set(DBZIW_IOPLIFT_TEST_DIR "${CMAKE_CURRENT_BINARY_DIR}/ioplift-test")
+    # DW5 054 (015): a build machine of another system (Windows built on Linux: CI's windows-build) cannot run the
+    # programs built here; it builds app/host_tools with its own compiler and runs those copies.
+    if(CMAKE_CROSSCOMPILING AND NOT CMAKE_HOST_SYSTEM_NAME STREQUAL CMAKE_SYSTEM_NAME)
+        include(ExternalProject)
+        set(DBZIW_HOST_TOOLS_DIR "${CMAKE_CURRENT_BINARY_DIR}/host-tools")
+        set(DBZIW_IOPLIFT_TESTGEN "${DBZIW_HOST_TOOLS_DIR}/dbziw_ioplift_testgen${CMAKE_HOST_EXECUTABLE_SUFFIX}")
+        set(DBZIW_IOPLIFT "${DBZIW_HOST_TOOLS_DIR}/dbziw_ioplift${CMAKE_HOST_EXECUTABLE_SUFFIX}")
+        ExternalProject_Add(dbziw_host_tools
+            SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/host_tools"
+            BINARY_DIR "${DBZIW_HOST_TOOLS_DIR}"
+            CMAKE_ARGS -DCMAKE_BUILD_TYPE=Release
+            BUILD_ALWAYS ON # rebuilt (usually a no-op) on every build, so source changes reach the host copies
+            INSTALL_COMMAND ""
+            BUILD_BYPRODUCTS "${DBZIW_IOPLIFT_TESTGEN}" "${DBZIW_IOPLIFT}")
+        set(DBZIW_IOPLIFT_TOOLS dbziw_host_tools "${DBZIW_IOPLIFT_TESTGEN}" "${DBZIW_IOPLIFT}")
+    else()
+        set(DBZIW_IOPLIFT_TESTGEN $<TARGET_FILE:dbziw_ioplift_testgen>)
+        set(DBZIW_IOPLIFT $<TARGET_FILE:dbziw_ioplift>)
+        set(DBZIW_IOPLIFT_TOOLS dbziw_ioplift_testgen dbziw_ioplift)
+    endif()
+    add_custom_command(OUTPUT "${DBZIW_IOPLIFT_TEST_DIR}/iop_IOPTEST.cpp"
+        COMMAND "${DBZIW_IOPLIFT_TESTGEN}" "${DBZIW_IOPLIFT_TEST_DIR}/program.bin"
+        COMMAND "${DBZIW_IOPLIFT}" --raw "${DBZIW_IOPLIFT_TEST_DIR}/program.bin" 80000 IOPTEST "${DBZIW_IOPLIFT_TEST_DIR}"
+        DEPENDS ${DBZIW_IOPLIFT_TOOLS} "${CMAKE_CURRENT_SOURCE_DIR}/tests/ioplift_test_program.h"
+        VERBATIM)
+    add_executable(dbziw_ioplift_test tests/ioplift_test.cpp "${DBZIW_IOPLIFT_TEST_DIR}/iop_IOPTEST.cpp"
+        $<TARGET_OBJECTS:dbziw_iop_translator>)
+    target_include_directories(dbziw_ioplift_test PRIVATE tests setup/ioplift "${PS2RECOMP_DIR}/ps2xIOP/src" "${PS2RECOMP_DIR}/ps2xIOP/include")
+    target_link_libraries(dbziw_ioplift_test PRIVATE ps2_iop)
+    add_test(NAME dbziw_ioplift_test COMMAND dbziw_ioplift_test)
+    set_tests_properties(dbziw_ioplift_test PROPERTIES TIMEOUT 120)
     # DBZIW-TEST vu1_lift (issue 012; DW5 036): every translated VU1 program against the interpreter, on images
     # rebuilt from the player's executable. Only where translated code exists.
     if(DBZIW_VU1_LIFTED_SOURCES)

@@ -1,6 +1,7 @@
 #include "ps2x/iop/iop_ascii.h"
 #include <cstdio>
 #include "iop_emulator.h"
+#include "ps2x/iop/iop_subsystem.h" // kIopHostClockPollEeCycles
 #include "imports/iop_cdvd.h"
 #include "core/iop_cpu.h"
 #include "imports/iop_heaplib.h"
@@ -18,6 +19,7 @@
 #include "imports/iop_timrman.h"
 #include "imports/iop_vblank.h"
 #include "iop_emulator_const.h"
+#include "ps2x/iop/iop_native.h"
 
 #include <algorithm>
 #include <cctype>
@@ -26,11 +28,39 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <time.h> // clock_gettime (DBZIW-DEBUG, 015)
 #include <map>
 #include <optional>
 #include <span>
 #include <sstream>
 #include <utility>
+#include <vector>
+#include <string>
+#include <cstring>
+
+// DW5 009 v4.5 (015): the translated IOP modules registered by the generated iop_registry.cpp.
+namespace ps2x::iop
+{
+    namespace detail
+    {
+        std::vector<IopNativeModule> &nativeRegistry()
+        {
+            static std::vector<IopNativeModule> modules;
+            return modules;
+        }
+    }
+
+    IopNativeRegistrar::IopNativeRegistrar(const IopNativeModule *modules, size_t count) noexcept
+    {
+        try
+        {
+            detail::nativeRegistry().insert(detail::nativeRegistry().end(), modules, modules + count);
+        }
+        catch (...)
+        {
+        }
+    }
+}
 
 namespace ps2x::iop::detail
 {
@@ -48,7 +78,7 @@ namespace ps2x::iop::detail
         // DBZIW: generated EE code accounts 32 cycles per checkpoint. Reading the host clock and
         // running an IOP scheduler pass at each one cost more than the IOP work itself, so the
         // host-clocked IOP catches up once per this many EE cycles (~14 us of PS2 time).
-        constexpr uint64_t kHostClockPollEeCycles = 4096u;
+        constexpr uint64_t kHostClockPollEeCycles = kIopHostClockPollEeCycles;
         constexpr uint64_t kNanosecondsPerSecond = 1'000'000'000u;
 
         uint32_t physicalAddress(uint32_t address)
@@ -59,6 +89,16 @@ namespace ps2x::iop::detail
         int32_t sign16(uint32_t value)
         {
             return static_cast<int16_t>(value & 0xFFFFu);
+        }
+
+        // DBZIW-DEBUG (015): this thread's CPU time. Far less than a catch-up's wall time means the PC did not run the
+        // thread. Coarse on Windows (a scheduler tick, about 16 ms); only the catch-up trace reads it.
+        double threadCpuMs() noexcept
+        {
+            timespec now{};
+            return clock_gettime(CLOCK_THREAD_CPUTIME_ID, &now) == 0
+                       ? static_cast<double>(now.tv_sec) * 1e3 + static_cast<double>(now.tv_nsec) / 1e6
+                       : 0.0;
         }
 
         bool iequals(std::string_view lhs, std::string_view rhs)
@@ -143,6 +183,8 @@ namespace ps2x::iop::detail
             memory.reset();
             kernel.reset();
             modules.clear();
+            activeNative.clear(); // DW5 009 v4.5, 015 (memory.reset() cleared the code map)
+            lastNative = 0u;
             imports.reset();
             rpc.reset();
             cdvd.reset();
@@ -466,6 +508,11 @@ namespace ps2x::iop::detail
             advanceSound();
             if (cpu.stopped)
                 return false;
+            if (cpu.pc == kRpcServerReturnSentinel)
+            {
+                rpc.onServerReturned(kernel.currentThreadId()); // DW5 009 v4.4, 015: back asleep in its RPC loop
+                return false;
+            }
             if (cpu.pc == kThreadReturnSentinel || cpu.pc == kCallReturnSentinel)
             {
                 cpu.stopped = true;
@@ -484,9 +531,27 @@ namespace ps2x::iop::detail
 
             if (const auto import = imports.decode(cpu.pc))
             {
+                if (replayImport && replayImport->valid && replayImport->stubPc == cpu.pc)
+                {
+                    // DW5 009 v4.5 (015) check mode: the native run made this call; take its result instead of calling again.
+                    replayImportAtSameCount = totalCycles == replayImport->beforeCycles &&
+                                              totalInstructions == replayImport->beforeInstructions;
+                    cpu = replayImport->after;
+                    totalCycles = replayImport->cycles;
+                    totalInstructions = replayImport->instructions;
+                    for (const ImportRecord::Bytes &bytes : replayImport->writes)
+                    {
+                        std::memcpy(memory.ramData() + bytes.address, bytes.data.data(), bytes.data.size());
+                        std::memcpy(memory.ownedData() + bytes.address, bytes.owned.data(), bytes.owned.size());
+                    }
+                    replayImport = nullptr;
+                    replayImportUsed = true;
+                    return !cpu.stopped;
+                }
                 const ImportDisposition disposition = dispatchImport(*import, cpu);
                 ++totalInstructions;
                 ++totalCycles;
+                interpretedInstructions += !verifyReplaying; // DW5 009 v4.5, 015 statistics
                 if (disposition == ImportDisposition::JumpToGuest)
                     return true;
                 cpu.pc = cpu.gpr[31];
@@ -527,8 +592,559 @@ namespace ps2x::iop::detail
             schedulePendingDma();
             ++totalInstructions;
             ++totalCycles;
+            interpretedInstructions += !verifyReplaying; // DW5 009 v4.5, 015 statistics
             return running;
         }
+
+        // ---- DW5 009 v4.5 (015): translated module code (ps2x/iop/iop_native.h) in place of the interpreter ----
+        struct ActiveNative
+        {
+            uint32_t begin = 0u;
+            uint32_t end = 0u;
+            uint64_t hash = 0u;
+            IopNativeRun run = nullptr;
+            const char *name = "";
+            const uint32_t *dataWords = nullptr;
+            uint32_t dataWordCount = 0u;
+        };
+
+        static bool nativeSwitch(const char *name, bool fallback)
+        {
+            const char *value = std::getenv(name);
+            return value && *value ? std::string_view(value) != "0" : fallback;
+        }
+
+        bool nativeWanted(const char *name) const
+        {
+            if (nativeOnly.empty())
+                return true;
+            std::string_view list = nativeOnly;
+            while (!list.empty())
+            {
+                const size_t comma = list.find(',');
+                if (iequals(list.substr(0, comma), name))
+                    return true;
+                if (comma == std::string_view::npos)
+                    break;
+                list.remove_prefix(comma + 1u);
+            }
+            return false;
+        }
+
+        // A module image now at [base, base + size): its translated code is used if the RAM holds exactly the bytes
+        // it was made from.
+        void activateNative(uint32_t base, uint32_t size)
+        {
+            if (!nativeEnabled)
+                return;
+            for (const IopNativeModule &module : nativeRegistry())
+            {
+                if (module.textBase < base || module.textBase + module.textSize > base + size || !nativeWanted(module.name))
+                    continue;
+                if (module.textBase + module.textSize > IopMemory::RamSize ||
+                    iopNativeTextHash(memory.ramData() + module.textBase, module.textSize, module.textBase, module.dataWords,
+                                      module.dataWordCount) != module.textHash)
+                {
+                    std::fprintf(stderr, "[iopnative] %s: code differs from the translation, interpreted\n", module.name);
+                    continue;
+                }
+                deactivateNative(module.textBase, module.textSize);
+                activeNative.push_back({module.textBase, module.textBase + module.textSize, module.textHash, module.run, module.name,
+                                        module.dataWords, module.dataWordCount});
+                memory.markNativeCode(module.textBase, module.textSize, true);
+                for (uint32_t k = 0; k < module.dataWordCount; ++k)
+                    memory.markNativeCode(module.dataWords[k], 4u, false);
+                std::fprintf(stderr, "[iopnative] %s native (0x%05x-0x%05x)%s\n", module.name, module.textBase,
+                             module.textBase + module.textSize, nativeVerify ? ", check mode" : "");
+            }
+            lastNative = 0u;
+        }
+
+        void deactivateNative(uint32_t base, uint32_t size)
+        {
+            for (size_t i = 0; i < activeNative.size();)
+            {
+                if (activeNative[i].begin < base + size && base < activeNative[i].end)
+                {
+                    memory.markNativeCode(activeNative[i].begin, activeNative[i].end - activeNative[i].begin, false);
+                    activeNative.erase(activeNative.begin() + static_cast<std::ptrdiff_t>(i));
+                }
+                else
+                    ++i;
+            }
+            lastNative = 0u;
+        }
+
+        // A RAM write hit translated code: modules whose code bytes changed run in the interpreter from now on.
+        void dropChangedNative()
+        {
+            for (size_t i = 0; i < activeNative.size();)
+            {
+                const ActiveNative &active = activeNative[i];
+                if (iopNativeTextHash(memory.ramData() + active.begin, active.end - active.begin, active.begin, active.dataWords,
+                                      active.dataWordCount) != active.hash)
+                {
+                    // DBZIW-DEBUG: which word (the last write that hit translated code) and when.
+                    std::fprintf(stderr, "[iopnative] %s: its code was overwritten, interpreted from now on (write at 0x%05x, cycle %llu, thread %d, pc 0x%05x)\n",
+                                 active.name, memory.lastNativeCodeWrite(), static_cast<unsigned long long>(totalCycles),
+                                 kernel.currentThreadId(), activeCpu ? activeCpu->pc : 0u);
+                    memory.markNativeCode(active.begin, active.end - active.begin, false);
+                    activeNative.erase(activeNative.begin() + static_cast<std::ptrdiff_t>(i));
+                }
+                else
+                    ++i;
+            }
+            lastNative = 0u;
+        }
+
+        void rebuildNative()
+        {
+            activeNative.clear();
+            memory.clearNativeCode();
+            for (const auto &[id, module] : modules)
+                activateNative(module.base, module.size);
+        }
+
+        // The interpreter's check before an instruction (checkInterrupt) without its effect.
+        bool interruptDue(const CpuState &cpu) const
+        {
+            const uint32_t status = cpu.cop0[12];
+            return (status & 1u) != 0u && (status & 2u) == 0u && memory.interruptControl() != 0u &&
+                   (memory.interruptStatus() & memory.interruptMask()) != 0u;
+        }
+
+        // How many instructions may run before the interpreter would do something between two of them (runCpu's
+        // services, the timer check, a sound sample that can raise the sound interrupt). 0: step instead.
+        uint64_t nativeLimit(uint64_t budgetLeft, uint64_t nextTimerCheck)
+        {
+            uint64_t limit = std::min<uint64_t>(budgetLeft, nextTimerCheck > totalCycles ? nextTimerCheck - totalCycles : 0u);
+            if (memory.interruptControl() != 0u)
+            {
+                if (pendingSoundInterrupt && !servicingSoundInterrupt)
+                    return 0u;
+                if (!servicingDmaInterrupts)
+                    for (const auto &[irq, due] : pendingDmaInterrupts)
+                        limit = std::min<uint64_t>(limit, due > totalCycles ? due - totalCycles : 1u);
+            }
+            if (!servicingGuestCallbacks && !pendingGuestCallbacks.empty())
+            {
+                const uint64_t due = pendingGuestCallbacks.begin()->first;
+                limit = std::min<uint64_t>(limit, due > totalCycles ? due - totalCycles : 1u);
+            }
+            return std::min<uint64_t>(limit, memory.spu2().cyclesUntilIrqCheck());
+        }
+
+        const ActiveNative *nativeAt(uint32_t pc)
+        {
+            if (lastNative < activeNative.size() && pc - activeNative[lastNative].begin < activeNative[lastNative].end - activeNative[lastNative].begin)
+                return &activeNative[lastNative];
+            for (size_t i = 0; i < activeNative.size(); ++i)
+                if (pc - activeNative[i].begin < activeNative[i].end - activeNative[i].begin)
+                {
+                    lastNative = i;
+                    return &activeNative[i];
+                }
+            return nullptr;
+        }
+
+        static void toFrame(const CpuState &cpu, IopNativeFrame &f)
+        {
+            std::memcpy(f.gpr, cpu.gpr.data(), sizeof(f.gpr));
+            f.hi = cpu.hi;
+            f.lo = cpu.lo;
+            f.pc = cpu.pc;
+            f.pendingLoadReg = cpu.pendingLoadReg;
+            f.pendingLoadValue = cpu.pendingLoadValue;
+            f.pendingLoad = cpu.pendingLoad;
+            f.branchPending = false;
+            f.branchTarget = cpu.branchTarget;
+        }
+
+        static void fromFrame(const IopNativeFrame &f, CpuState &cpu)
+        {
+            std::memcpy(cpu.gpr.data(), f.gpr, sizeof(f.gpr));
+            cpu.hi = f.hi;
+            cpu.lo = f.lo;
+            cpu.pc = f.pc;
+            cpu.pendingLoadReg = f.pendingLoadReg;
+            cpu.pendingLoadValue = f.pendingLoadValue;
+            cpu.pendingLoad = f.pendingLoad;
+            cpu.branchPending = f.branchPending;
+            cpu.branchTarget = f.branchTarget;
+            cpu.exception = false; // as executeInstruction leaves them after an instruction
+            cpu.yielded = false;
+        }
+
+        // Check mode: what an import call in a native run did, so the interpreter's repeat gets the same result.
+        struct ImportRecord
+        {
+            struct Bytes
+            {
+                uint32_t address = 0u;
+                std::vector<uint8_t> data, owned;
+            };
+            bool valid = false;
+            uint32_t stubPc = 0u;
+            uint64_t beforeCycles = 0u, beforeInstructions = 0u; // the counters as the call starts
+            std::string call;                                    // library:ordinal (for reports)
+            CpuState after{};
+            uint64_t cycles = 0u, instructions = 0u;
+            std::vector<Bytes> writes;              // IOP RAM the call wrote (final bytes)
+            std::vector<IopMemory::RamUndo> undo;   // ... and what it replaced, in order
+        };
+
+        // Runs translated code at cpu.pc in place of interpreter steps; returns the instructions carried out (0: the
+        // caller steps the interpreter).
+        uint32_t tryNative(CpuState &cpu, uint64_t budgetLeft, uint64_t nextTimerCheck)
+        {
+            if (activeNative.empty() || cpu.branchPending || cpu.stopped)
+                return 0u;
+            if (memory.takeNativeCodeWrite())
+                dropChangedNative();
+            const ActiveNative *module = nativeAt(cpu.pc);
+            if (!module)
+                return 0u;
+            advanceSound(); // as step() does first
+            if (interruptDue(cpu))
+                return 0u;
+            const uint64_t limit = nativeLimit(budgetLeft, nextTimerCheck);
+            if (limit == 0u)
+                return 0u;
+            IopNativeFrame f{};
+            toFrame(cpu, f);
+            f.budget = static_cast<uint32_t>(std::min<uint64_t>(limit, 1u << 24u));
+            f.ram = memory.ramData();
+            f.owned = memory.ownedData();
+            f.codeWords = memory.nativeCodeWords();
+            f.hwRead = &nativeHwRead;
+            f.hwWrite = &nativeHwWrite;
+            f.importCall = &nativeImport;
+            f.host = this;
+            const uint64_t startCycles = totalCycles, startInstructions = totalInstructions;
+            nativeRunCycles = startCycles;
+            nativeRunInstructions = startInstructions;
+            nativeRunCpu = &cpu;
+            struct Depth
+            {
+                uint32_t &depth;
+                ~Depth() { --depth; }
+            } depth{++nativeDepth};
+            if (nativeVerify)
+            {
+                const uint32_t verified = verifyNative(*module, cpu, f, nextTimerCheck);
+                --nativeDepth;
+                nativeStats();
+                ++nativeDepth;
+                return verified;
+            }
+            const uint32_t ran = module->run(f);
+            if (ran == 0u)
+            {
+                totalCycles = startCycles; // an import that turned out not to be one may have set them
+                totalInstructions = startInstructions;
+                return 0u;
+            }
+            if (!f.importDone)
+            {
+                fromFrame(f, cpu);
+                totalCycles = startCycles + ran;
+                totalInstructions = startInstructions + ran;
+            } // else: the import call left the thread state and the counters final (as step() does)
+            nativeInstructions += ran;
+            ++nativeRuns;
+            if (f.codeWritten)
+                dropChangedNative();
+            --nativeDepth;
+            nativeStats(); // only for the outermost run: nested runs (inside an import call) see moving counters
+            ++nativeDepth;
+            return ran;
+        }
+
+        // A hardware register (or the scratchpad) at this instruction of the run, as step() reaches it: the sound
+        // chip advanced to this cycle, the access, then a DMA the access started is scheduled from this cycle.
+        void nativeSyncTo(uint32_t executed)
+        {
+            totalCycles = nativeRunCycles + executed;
+            totalInstructions = nativeRunInstructions + executed;
+            advanceSound();
+        }
+
+        static uint32_t nativeHwRead(void *host, uint32_t address, uint32_t size, uint32_t executed)
+        {
+            Impl &e = *static_cast<Impl *>(host);
+            e.nativeSyncTo(executed);
+            const uint32_t value = size == 1u ? e.memory.read8(address) : size == 2u ? e.memory.read16(address) : e.memory.read32(address);
+            e.schedulePendingDma();
+            if (e.nativeHwRecord)
+                e.nativeHwRecord->push_back({address, size, value, false, e.totalCycles});
+            return value;
+        }
+
+        static void nativeHwWrite(void *host, uint32_t address, uint32_t size, uint32_t value, uint32_t executed)
+        {
+            Impl &e = *static_cast<Impl *>(host);
+            e.nativeSyncTo(executed);
+            if (size == 1u)
+                e.memory.write8(address, static_cast<uint8_t>(value));
+            else if (size == 2u)
+                e.memory.write16(address, static_cast<uint16_t>(value));
+            else
+                e.memory.write32(address, value);
+            e.schedulePendingDma();
+            if (e.nativeHwRecord)
+                e.nativeHwRecord->push_back({address, size, value, true, e.totalCycles});
+        }
+
+        // The import at f.pc, exactly as step() makes it; the thread state and the counters are final afterwards.
+        static bool nativeImport(void *host, IopNativeFrame &f, uint32_t executed)
+        {
+            Impl &e = *static_cast<Impl *>(host);
+            const auto call = e.imports.decode(f.pc);
+            if (!call)
+                return false;
+            CpuState &cpu = *e.nativeRunCpu;
+            fromFrame(f, cpu);
+            e.nativeSyncTo(executed);
+            if (e.interruptDue(cpu))
+                return false; // the interpreter takes the interrupt first (it cannot become due inside a run)
+            ImportRecord *record = e.nativeImportRecord;
+            const uint32_t stubPc = f.pc;
+            const uint64_t beforeCycles = e.nativeRunCycles + executed, beforeInstructions = e.nativeRunInstructions + executed;
+            auto *previousUndo = e.memory.ramUndo();
+            std::vector<IopMemory::RamUndo> ramUndo;
+            if (record)
+                e.memory.setRamUndo(&ramUndo);
+            const ImportDisposition disposition = e.dispatchImport(*call, cpu);
+            e.memory.setRamUndo(previousUndo);
+            if (previousUndo) // an enclosing check needs these too
+                previousUndo->insert(previousUndo->end(), ramUndo.begin(), ramUndo.end());
+            ++e.totalInstructions;
+            ++e.totalCycles;
+            if (disposition != ImportDisposition::JumpToGuest)
+            {
+                cpu.pc = cpu.gpr[31];
+                cpu.branchPending = false;
+            }
+            toFrame(cpu, f);
+            f.branchPending = cpu.branchPending;
+            f.importDone = true;
+            if (record)
+            {
+                record->valid = true;
+                record->stubPc = stubPc;
+                record->beforeCycles = beforeCycles;
+                record->beforeInstructions = beforeInstructions;
+                record->call = call->library + ":" + std::to_string(call->ordinal);
+                record->after = cpu;
+                record->cycles = e.totalCycles;
+                record->instructions = e.totalInstructions;
+                record->writes.clear();
+                for (const IopMemory::RamUndo &undo : ramUndo)
+                {
+                    ImportRecord::Bytes bytes{undo.address, {}, {}};
+                    bytes.data.assign(e.memory.ramData() + undo.address, e.memory.ramData() + undo.address + undo.data.size());
+                    bytes.owned.assign(e.memory.ownedData() + undo.address, e.memory.ownedData() + undo.address + undo.data.size());
+                    record->writes.push_back(std::move(bytes));
+                }
+                record->undo = std::move(ramUndo);
+            }
+            return true;
+        }
+
+        // Check mode: the native run (hardware accesses and an import carried out for real and recorded), its own RAM
+        // stores undone, then the same instructions by the interpreter, given the recorded hardware values and import
+        // result instead of touching hardware or the kernel again; registers, counters and memory compared.
+        uint32_t verifyNative(const ActiveNative &module, CpuState &cpu, IopNativeFrame &f, uint64_t nextTimerCheck)
+        {
+            const uint32_t startPc = cpu.pc;
+            const CpuState before = cpu;
+            const uint64_t startCycles = totalCycles, startInstructions = totalInstructions;
+            // DBZIW (020): interrupts stay masked per thread. Only a run's last instruction can change this (a hardware
+            // access or an import ends the run), and the repeat below leaves the register as the native run left it,
+            // so the checks between its instructions use the value the run started with.
+            const bool interruptsAtStart = memory.interruptControl() != 0u;
+            std::vector<IopMemory::HwAccess> hwRecord;
+            ImportRecord importRecord;
+            std::vector<IopNativeFrame::UndoEntry> undo(4096u);
+            f.undo = undo.data();
+            f.undoCount = 0u;
+            f.undoCapacity = undo.size();
+            auto *previousHw = std::exchange(nativeHwRecord, &hwRecord);
+            auto *previousImport = std::exchange(nativeImportRecord, &importRecord);
+            const uint32_t ran = module.run(f);
+            nativeHwRecord = previousHw;
+            nativeImportRecord = previousImport;
+            if (ran == 0u)
+            {
+                totalCycles = startCycles;
+                totalInstructions = startInstructions;
+                return 0u;
+            }
+            CpuState native = before;
+            uint64_t nativeCycles = startCycles + ran, nativeInstructionCount = startInstructions + ran;
+            if (f.importDone)
+            {
+                native = importRecord.after;
+                nativeCycles = importRecord.cycles;
+                nativeInstructionCount = importRecord.instructions;
+            }
+            else
+                fromFrame(f, native);
+            struct Written { uint32_t address, size; uint8_t bytes[4], owned[4]; };
+            std::vector<Written> written(f.undoCount);
+            for (size_t i = 0; i < f.undoCount; ++i)
+            {
+                written[i].address = f.undo[i].address;
+                written[i].size = f.undo[i].size;
+                std::memcpy(written[i].bytes, memory.ramData() + f.undo[i].address, f.undo[i].size);
+                std::memcpy(written[i].owned, memory.ownedData() + f.undo[i].address, f.undo[i].size);
+            }
+            if (f.importDone) // the import came last: undo its RAM writes first
+                for (size_t i = importRecord.undo.size(); i-- > 0;)
+                {
+                    const IopMemory::RamUndo &u = importRecord.undo[i];
+                    std::memcpy(memory.ramData() + u.address, u.data.data(), u.data.size());
+                    std::memcpy(memory.ownedData() + u.address, u.owned.data(), u.owned.size());
+                }
+            for (size_t i = f.undoCount; i-- > 0;)
+            {
+                std::memcpy(memory.ramData() + f.undo[i].address, f.undo[i].oldBytes, f.undo[i].size);
+                std::memcpy(memory.ownedData() + f.undo[i].address, f.undo[i].oldOwned, f.undo[i].size);
+            }
+            // The interpreter, with no services in between (the limit says none would act; checked here too).
+            cpu = before;
+            totalCycles = startCycles;
+            totalInstructions = startInstructions;
+            std::vector<std::pair<uint32_t, uint32_t>> interpreted;
+            auto *previousLog = memory.writeLog();
+            memory.setWriteLog(&interpreted);
+            IopMemory::HwReplay hwReplay{&hwRecord, &totalCycles};
+            memory.setHwReplay(&hwReplay);
+            replayImport = f.importDone ? &importRecord : nullptr;
+            std::string problem;
+            const bool wasReplaying = std::exchange(verifyReplaying, true);
+            for (uint32_t i = 0; i < ran && problem.empty(); ++i)
+            {
+                if (!step(cpu) && i + 1u < ran)
+                    problem = "the interpreter stopped";
+                else if (i + 1u < ran && interruptsAtStart && pendingSoundInterrupt && !servicingSoundInterrupt)
+                    problem = "a sound interrupt became due inside the run";
+                else if (i + 1u < ran && interruptsAtStart && !servicingDmaInterrupts &&
+                         std::any_of(pendingDmaInterrupts.begin(), pendingDmaInterrupts.end(),
+                                     [&](const auto &dma) { return dma.second <= totalCycles; }))
+                    problem = "a DMA completion became due inside the run";
+                else if (i + 1u < ran && !servicingGuestCallbacks && !pendingGuestCallbacks.empty() &&
+                         pendingGuestCallbacks.begin()->first <= totalCycles)
+                    problem = "a callback became due inside the run";
+                else if (i + 1u < ran && totalCycles >= nextTimerCheck)
+                    problem = "the timer check fell inside the run";
+            }
+            verifyReplaying = wasReplaying;
+            replayImport = nullptr;
+            memory.setHwReplay(nullptr);
+            memory.setWriteLog(previousLog);
+            if (problem.empty() && (hwReplay.mismatch || hwReplay.next != hwRecord.size()))
+                problem = "hardware accesses differ";
+            if (problem.empty() && f.importDone && !replayImportUsed)
+                problem = "the interpreter did not reach the import";
+            if (problem.empty() && f.importDone && !replayImportAtSameCount)
+                problem = "the interpreter reached the import at another instruction count";
+            replayImportUsed = false;
+            if (problem.empty() && (totalInstructions != nativeInstructionCount || totalCycles != nativeCycles))
+                problem = "the interpreter ran a different number of instructions";
+            if (problem.empty())
+            {
+                const bool pendingSame = cpu.pendingLoad == native.pendingLoad &&
+                                         (!cpu.pendingLoad || (cpu.pendingLoadReg == native.pendingLoadReg &&
+                                                               cpu.pendingLoadValue == native.pendingLoadValue));
+                if (cpu.gpr != native.gpr || cpu.hi != native.hi || cpu.lo != native.lo || cpu.pc != native.pc ||
+                    !pendingSame || cpu.branchPending != native.branchPending || cpu.branchTarget != native.branchTarget)
+                    problem = "registers differ";
+            }
+            for (size_t i = 0; problem.empty() && i < written.size(); ++i)
+                if (std::memcmp(memory.ramData() + written[i].address, written[i].bytes, written[i].size) != 0 ||
+                    std::memcmp(memory.ownedData() + written[i].address, written[i].owned, written[i].size) != 0)
+                {
+                    uint32_t nativeWord = 0u, interpretedWord = 0u;
+                    std::memcpy(&nativeWord, written[i].bytes, written[i].size);
+                    std::memcpy(&interpretedWord, memory.ramData() + written[i].address, written[i].size);
+                    char text[320];
+                    std::snprintf(text, sizeof(text),
+                                  "memory differs at 0x%05x (%u bytes: native %08x, interpreted %08x; run ended by %s, %zu hardware accesses)",
+                                  written[i].address, written[i].size, nativeWord, interpretedWord,
+                                  f.importDone ? ("import " + importRecord.call + " (" + std::to_string(importRecord.writes.size()) +
+                                                  " RAM writes)").c_str()
+                                               : f.ended ? "a hardware access" : "its limit", hwRecord.size());
+                    problem = text;
+                }
+            for (size_t i = 0; problem.empty() && i < interpreted.size(); ++i)
+            {
+                const auto [address, size] = interpreted[i];
+                const bool covered = std::any_of(written.begin(), written.end(), [&](const Written &w)
+                                                 { return w.address <= address && address + size <= w.address + w.size; });
+                if (!covered)
+                    problem = "the interpreter wrote memory the native run did not";
+            }
+            ++verifyRuns;
+            nativeInstructions += ran;
+            ++nativeRuns;
+            if (!problem.empty())
+            {
+                ++verifyMismatches;
+                if (verifyMismatches <= 20u)
+                    std::fprintf(stderr, "[iopnative:verify] MISMATCH %s start=0x%05x instructions=%u: %s\n", module.name,
+                                 startPc, ran, problem.c_str());
+            }
+            if (memory.takeNativeCodeWrite() || f.codeWritten)
+                dropChangedNative();
+            return ran;
+        }
+
+        void nativeStats()
+        {
+            if (!nativeStatsOn || nativeDepth != 0u || totalCycles - nativeStatsCycle < kIopClockHz)
+                return;
+            // Native = every instruction the interpreter did not step (native runs, imports they made, nested runs).
+            const uint64_t instructions = totalInstructions - nativeStatsInstructions;
+            const uint64_t interpreted = interpretedInstructions - nativeStatsInterpreted;
+            const uint64_t native = instructions >= interpreted ? instructions - interpreted : 0u;
+            const uint64_t runs = nativeRuns - nativeStatsRuns;
+            std::fprintf(stderr, "[iopnative] second native=%.1f%% (%llu of %llu instructions) runs=%llu (%.1f per run) verify=%llu mismatches=%llu"
+                                 " [counted in runs %llu; totals: instructions %llu, interpreted %llu, in runs %llu]\n",
+                         instructions ? 100.0 * static_cast<double>(native) / static_cast<double>(instructions) : 0.0,
+                         static_cast<unsigned long long>(native), static_cast<unsigned long long>(instructions),
+                         static_cast<unsigned long long>(runs), runs ? static_cast<double>(native) / static_cast<double>(runs) : 0.0,
+                         static_cast<unsigned long long>(verifyRuns), static_cast<unsigned long long>(verifyMismatches),
+                         static_cast<unsigned long long>(nativeInstructions - nativeStatsNative),
+                         static_cast<unsigned long long>(totalInstructions), static_cast<unsigned long long>(interpretedInstructions),
+                         static_cast<unsigned long long>(nativeInstructions));
+            nativeStatsInterpreted = interpretedInstructions;
+            nativeStatsCycle = totalCycles;
+            nativeStatsInstructions = totalInstructions;
+            nativeStatsNative = nativeInstructions;
+            nativeStatsRuns = nativeRuns;
+        }
+
+        std::vector<ActiveNative> activeNative;
+        size_t lastNative = 0u;
+        // PS2X_IOP_PC_TRACE (DBZIW-DEBUG, 020) watches every interpreted pc: it runs everything in the interpreter.
+        bool nativeEnabled = nativeSwitch("PS2X_IOP_LIFT", true) && !std::getenv("PS2X_IOP_PC_TRACE");
+        bool nativeVerify = nativeSwitch("PS2X_IOP_LIFT_VERIFY", false);
+        bool nativeStatsOn = nativeVerify || nativeSwitch("PS2X_IOP_LIFT_STATS", false);
+        std::string nativeOnly = std::getenv("PS2X_IOP_LIFT_MODULES") ? std::getenv("PS2X_IOP_LIFT_MODULES") : "";
+        uint64_t nativeInstructions = 0u, nativeRuns = 0u, verifyRuns = 0u, verifyMismatches = 0u;
+        uint64_t nativeStatsCycle = 0u, nativeStatsInstructions = 0u, nativeStatsNative = 0u, nativeStatsRuns = 0u;
+        uint64_t nativeRunCycles = 0u, nativeRunInstructions = 0u; // where the current native run started
+        uint32_t nativeDepth = 0u;                                  // native runs in progress (imports nest them)
+        uint64_t interpretedInstructions = 0u, nativeStatsInterpreted = 0u; // interpreter steps (not check replays)
+        bool verifyReplaying = false;
+        CpuState *nativeRunCpu = nullptr;
+        std::vector<IopMemory::HwAccess> *nativeHwRecord = nullptr; // check mode: the run's hardware accesses
+        ImportRecord *nativeImportRecord = nullptr;                // check mode: the run's import call
+        ImportRecord *replayImport = nullptr;                      // check mode: the interpreter's repeat uses it
+        bool replayImportUsed = false;
+        bool replayImportAtSameCount = false;
+        // ---- end DW5 009 v4.5, 015 ----
 
         uint32_t runCpu(CpuState &cpu, uint32_t instructionBudget)
         {
@@ -538,7 +1154,9 @@ namespace ps2x::iop::detail
             uint64_t nextTimerCheck = totalCycles + kDefaultSlice;
             while (!cpu.stopped && !cpu.yielded && totalInstructions - start < instructionBudget)
             {
-                if (!step(cpu))
+                // DW5 009 v4.5 (015): translated code for as many instructions as the interpreter would run without
+                // anything happening in between; otherwise one interpreter step.
+                if (tryNative(cpu, instructionBudget - (totalInstructions - start), nextTimerCheck) == 0u && !step(cpu))
                     break;
                 serviceSoundInterrupt();
                 if (!servicingDmaInterrupts && !pendingDmaInterrupts.empty())
@@ -830,7 +1448,9 @@ namespace ps2x::iop::detail
                 catchupThreadCycles.clear();
                 const uint64_t instructionsBefore = totalInstructions;
                 const auto start = std::chrono::steady_clock::now();
+                const double cpuBefore = threadCpuMs(), ioBefore = iopHostIoMs();
                 runCycles(deficit);
+                const double cpuMs = threadCpuMs() - cpuBefore, ioMs = iopHostIoMs() - ioBefore;
                 const auto hostNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - start).count();
                 if (hostNs > 2'000'000)
@@ -840,12 +1460,14 @@ namespace ps2x::iop::detail
                     const bool hasTop = top != catchupThreadCycles.end();
                     std::fprintf(stderr,
                                  "[iop-catchup] host-ms=%.2f iop-ms=%.2f gap-ms=%.2f instructions=%llu threads=%zu "
-                                 "top-thread=%d entry=0x%x top-share=%llu%%\n",
+                                 "top-thread=%d entry=0x%x top-share=%llu%% cpu-ms=%.1f io-ms=%.1f end=%.3f\n",
                                  hostNs / 1e6, deficit * 1e3 / kIopClockHz, serviceGapNs / 1e6,
                                  static_cast<unsigned long long>(totalInstructions - instructionsBefore),
                                  catchupThreadCycles.size(), hasTop ? top->first.first : -1,
                                  hasTop ? top->first.second : 0u,
-                                 static_cast<unsigned long long>(hasTop ? top->second * 100u / deficit : 0u));
+                                 static_cast<unsigned long long>(hasTop ? top->second * 100u / deficit : 0u), cpuMs, ioMs,
+                                 std::chrono::duration<double, std::milli>(
+                                     std::chrono::steady_clock::now().time_since_epoch()).count());
                 }
             }
             else if (deficit)
@@ -881,6 +1503,8 @@ namespace ps2x::iop::detail
             }
             if (!loaded.relocationsComplete)
                 log(LogLevel::Warning, "[IOP] one or more IRX relocations were unsupported");
+
+            activateNative(loaded.base, loaded.size); // DW5 009 v4.5, 015: before its start code runs
 
             Module module;
             module.id = nextModuleId++;
@@ -946,6 +1570,7 @@ namespace ps2x::iop::detail
             if (it == modules.end())
                 return false;
             // A removable IRX normally exposes a stop entry through module metadata. We do not guess it; terminate owned execution and release the image cleanly.
+            deactivateNative(it->second.base, it->second.size); // DW5 009 v4.5, 015
             kernel.terminateThreadsInRange(it->second.base, it->second.size);
             rpc.removeServersInRange(it->second.base, it->second.size);
             imports.eraseRange(it->second.base, it->second.size);
@@ -1052,7 +1677,41 @@ namespace ps2x::iop::detail
 
     RpcResult IopEmulator::handleRpc(const RpcRequest &request)
     {
-        return m_impl->rpc.handleRpc(request, *m_impl);
+        if (!m_impl->catchupTrace)
+            return m_impl->rpc.handleRpc(request, *m_impl);
+        // DBZIW-DEBUG (015 M1): a request's handler runs at once on the EE thread; how long, when over 1 ms.
+        const uint64_t instructionsBefore = m_impl->totalInstructions;
+        const auto start = std::chrono::steady_clock::now();
+        RpcResult result = m_impl->rpc.handleRpc(request, *m_impl);
+        const auto end = std::chrono::steady_clock::now();
+        const auto hostNs = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+        if (hostNs > 1'000'000)
+            std::fprintf(stderr, "[iop-rpc] host-ms=%.2f sid=0x%x function=0x%x instructions=%llu end=%.3f\n", hostNs / 1e6,
+                         request.sid, request.function,
+                         static_cast<unsigned long long>(m_impl->totalInstructions - instructionsBefore),
+                         std::chrono::duration<double, std::milli>(end.time_since_epoch()).count());
+        return result;
+    }
+
+    uint64_t IopEmulator::startRpc(const RpcRequest &request)
+    {
+        return m_impl->rpc.startRpc(request);
+    }
+
+    bool IopEmulator::busy() const noexcept
+    {
+        return m_impl->rpc.rpcInFlight() || m_impl->kernel.hasRunnableThread(m_impl->totalCycles);
+    }
+
+    bool IopEmulator::rpcInFlight() const noexcept
+    {
+        return m_impl->rpc.rpcInFlight();
+    }
+
+    void IopEmulator::runToHostClock() noexcept
+    {
+        if (const auto now = m_impl->host.monotonicNanoseconds())
+            m_impl->runHostClock(*now);
     }
 
     bool IopEmulator::hasRpcServer(uint32_t sid) const noexcept

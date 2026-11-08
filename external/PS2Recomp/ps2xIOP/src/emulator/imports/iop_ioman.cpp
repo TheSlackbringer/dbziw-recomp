@@ -3,6 +3,7 @@
 #include "../core/iop_cpu.h"
 #include "../core/iop_memory.h"
 #include "../services/iop_rpc.h"
+#include "ps2x/iop/iop_host.h"
 
 #include <algorithm>
 #include <cctype>
@@ -175,7 +176,10 @@ namespace ps2x::iop::detail
             const long before = trace ? std::ftell(file) : 0;
             if (ordinal == 6u)
             {
-                done = a2 ? std::fread(buffer.data(), 1u, a2, file) : 0u;
+                {
+                    const IopHostIoTimer ioTimer; // DBZIW-DEBUG (015)
+                    done = a2 ? std::fread(buffer.data(), 1u, a2, file) : 0u;
+                }
                 if (done && !m_memory.writeRam(a1, buffer.data(), done))
                     done = 0u;
             }

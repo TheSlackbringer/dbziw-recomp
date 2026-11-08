@@ -10,6 +10,10 @@
 
 namespace ps2x::iop
 {
+    // The host-clocked IOP catches up with the wall clock once per this many EE cycles (~14 us of PS2 time); the EE
+    // scheduler uses the same step while an IOP request is in flight (DW5 009 v4.4, 015).
+    inline constexpr uint64_t kIopHostClockPollEeCycles = 4096u;
+
     class IopSubsystem
     {
     public:
@@ -32,6 +36,14 @@ namespace ps2x::iop
         [[nodiscard]] bool canBindRpc(uint32_t sid) const noexcept;
         [[nodiscard]] bool hasEmulatedRpcServer(uint32_t sid) const noexcept;
         [[nodiscard]] RpcResult handleRpc(const RpcRequest &request);
+        // DW5 009 v4.4 (015) (design 1a): the request run by the emulated module's RPC thread in IOP time; its end comes
+        // through IopHost::rpcCompleted(token). 0 = not possible (a host-implemented server, or no RPC thread):
+        // use handleRpc.
+        [[nodiscard]] uint64_t startRpc(const RpcRequest &request);
+        [[nodiscard]] bool rpcInFlight() const noexcept;
+        // DW5 009 v4.5 (015): the IOP has work now (a request in flight or a runnable IOP thread).
+        [[nodiscard]] bool busy() const noexcept;
+        void runToHostClock() noexcept;
         void onSifTransfer(const SifTransfer &transfer);
 
         // Physical IOP RAM access shared by the emulator, SIF DMA, and HLE services. Addresses are IOP addresses.

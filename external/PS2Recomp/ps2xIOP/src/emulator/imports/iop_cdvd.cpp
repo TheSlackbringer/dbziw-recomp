@@ -681,6 +681,7 @@ namespace ps2x::iop::detail
             // The EE may pass synthetic LSNs obtained from its extracted-file
             // search to an IOP streaming driver. Consult that same map before
             // reading an image or this module's independently packed virtual ISO.
+            const IopHostIoTimer ioTimer; // DBZIW-DEBUG (015)
             const std::optional<bool> mapped = host.readMappedCdSectors(
                 lsn, sectors, bytes.data(), byteCount);
             bool read = mapped.value_or(false);

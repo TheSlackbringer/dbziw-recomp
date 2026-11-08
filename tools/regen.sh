@@ -103,3 +103,15 @@ mkdir -p "$root/recomp/vu1"
 "$lifter" "$(native_path "$root/game/$executable")" "$(native_path "$root/recomp/vu1")" > "$tmp/vu1lift.log"
 grep -c '^Translating' "$tmp/vu1lift.log" | sed 's/$/ VU1 programs translated/'
 tail -1 "$tmp/vu1lift.log"
+
+# DW5 009 v4.5 (015): the disc's IOP modules into recomp/iop/ (ignored, game-derived; build it first:
+# cmake --build app/build --target dbziw_ioplift; a new folder needs a CMake re-configure before the game build sees it).
+ioplift="${DBZIW_IOPLIFT:-$root/app/build/dbziw_ioplift}"
+[[ -x "$ioplift" || ! -x "$ioplift.exe" ]] || ioplift="$ioplift.exe"
+if [[ ! -x "$ioplift" ]]; then
+    echo "IOP translator missing: $ioplift (cmake --build app/build --target dbziw_ioplift)" >&2
+    exit 1
+fi
+echo "== Translating IOP modules from game/MODULES..."
+mkdir -p "$root/recomp/iop"
+"$ioplift" "$(native_path "$root/game/MODULES")" "$(native_path "$root/recomp/iop")"

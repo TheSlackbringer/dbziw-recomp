@@ -3,6 +3,7 @@
 #include "ps2x/iop/iop_types.h"
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -12,6 +13,21 @@
 
 namespace ps2x::iop
 {
+    // DBZIW-DEBUG (015): the milliseconds this thread spent in host disc and file reads, for [iop-catchup]'s io-ms.
+    [[nodiscard]] inline double &iopHostIoMs() noexcept
+    {
+        thread_local double total = 0.0;
+        return total;
+    }
+    struct IopHostIoTimer
+    {
+        std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        ~IopHostIoTimer()
+        {
+            iopHostIoMs() += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        }
+    };
+
     enum class HostPathKind : uint32_t
     {
         ElfDirectory = 0,
@@ -91,6 +107,12 @@ namespace ps2x::iop
             (void)address;
             normalized = 0u;
             return false;
+        }
+        // DW5 009 v4.4 (015) (design 1a): an EE request started with IopSubsystem::startRpc has finished on the IOP; its
+        // reply is in the EE receive buffer.
+        virtual void rpcCompleted(uint64_t token)
+        {
+            (void)token;
         }
         virtual uint32_t allocateIopHandle(IopHandleKind kind) = 0;
         virtual uint32_t allocateGuest(uint32_t size, uint32_t alignment) = 0;

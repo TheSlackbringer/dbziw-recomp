@@ -212,20 +212,25 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
   - `ps2xIOP/` — IOP R3000 interpreter running the game's real IRX modules (`CRI_ADXI.IRX`, `LIBSD.IRX`, `PADMAN.IRX`,
     `SIO2MAN.IRX`, `MCMAN.IRX`, `MCSERV.IRX`, `MODMIDI.IRX`, `AMSOUND.IRX`, `MODHSYN.IRX`, `SDRDRV.IRX`, `MODSEIN.IRX`,
     `MODSESQ.IRX`; `IOPRP310.IMG` handling: issue 020), IOP kernel `src/emulator/core/iop_kernel.cpp`, SPU2 model
-    `src/emulator/core/iop_spu2.cpp`.
+    `src/emulator/core/iop_spu2.cpp`. Since 015 all 12 modules run as translated native code (`recomp/iop/`,
+    `include/ps2x/iop/iop_native.h`, the hookup in `src/emulator/iop_emulator.cpp`); the interpreter runs faults, COP0,
+    code that was not translated and any module whose code or load address differs, and stays the reference.
   - `ps2xRecomp/` — the recompiler `ps2_recomp` (VU0 macro ops: `src/lib/vu_translator.cpp`).
 - `recomp/` — recompiler configuration (`dbz_iw.toml`: entry point `0x100008`, stubs, `[mmio]` map, jump tables,
   `[patches]`), `ghidra_functions.csv` (symbol boundaries across `0x100000`–`0x49C600`), and `recomp/output/`
   (generated C++, gitignored; `tools/regen.sh`), and `recomp/vu1/` (translated VU1 programs,
-  `dbziw_vu1_lifted_NN.cpp`, gitignored, written by `dbziw_vu1lift`).
+  `dbziw_vu1_lifted_NN.cpp`, gitignored, written by `dbziw_vu1lift`), and `recomp/iop/` (translated IOP modules,
+  gitignored, written by `dbziw_ioplift`: `tools/regen.sh` and the setup wizard, 015).
 - `app/` — the game target (built from generated code + the runtime's `main.cpp`) and the native setup pipeline:
   - `setup/` — first-launch setup wizard (`disc_setup`, `setup_pipeline`, `wizard_ui`, `wizard_console`,
     `build_game`, `install_state`, `codegen`) and `setup/vu1lift/`, the VU1 translator (`dbziw_vu1lift`, DW5's C++
-    translator; `vu1_inputs.h` holds offsets and SHA-256 only, built by `port/make_inputs.py` in 012's notes).
+    translator; `vu1_inputs.h` holds offsets and SHA-256 only, built by `port/make_inputs.py` in 012's notes) and
+    `setup/ioplift/`, the IOP translator (`dbziw_ioplift`, DW5 009 v4.5's C++ translator, 015: every instruction of
+    each module's code; `iop_inputs.h` holds the 12 module names, sizes, FNV-1a hashes and load addresses only).
   - `cmake/DbziwPlatform.cmake` — platform options and Windows DLL staging.
   - tests in `app/tests/` (CTest: `setup_disc`, 020's movie tests, 018's runtime tests from DW5's fork;
     `ee_poll_sema` and `vu1_lift` only with generated code; `vu1_lift`: every translated VU1 program against the
-    interpreter).
+    interpreter; `dbziw_ioplift_test`: our own R3000 test program, translated at build time, against the interpreter).
   - `src/` — `dbziw_movies.cpp` (the libmpeg replacement for Sofdec, 020) and `dbziw_movie_input.*`; no game
     overrides yet, no pad bridge (DBZIW uses the libpad HLE; 021).
 - `tools/` — `regen.sh`, `audit_stubs.py`, `diff_frames.py`, `fix_ghidra_csv.py`, `make_checkpoint.py`,
@@ -262,8 +267,7 @@ Stop a game with `kill <pid>` (never `pkill -f dbziw` from a shell whose own com
 Routes: `dbztest.py` (`ROUTE_BOOT`, `ROUTE_MENU`, `ROUTE_BATTLE`). The boot route `120:CROSS:5,400:CROSS:5,
 800:LEFT:5,850:CROSS:5,950:CROSS:5,1100:CROSS:5,1250:CROSS:5,1400:CROSS:5` passes language select (~70–130), the
 logos and the autosave warning; no memory-card check and no 50/60 Hz selector appear (017 M4, frames every 10 ticks:
-`800:LEFT` and `850:CROSS` land on the Dimps logo); the opening movie starts at ~1790 (020 M1;
-checkpoint `notes/issues/tests/out/020-m1-probe/state_1780.bin`). The same route reaches the title screen ("Press
+`800:LEFT` and `850:CROSS` land on the Dimps logo); the opening movie starts at ~1790 (020 M1). The same route reaches the title screen ("Press
 START button") at ~6750 after the movie (014 M3d). Further, PAL50: `6800:START:5,7100:CROSS:5` (New Game),
 `7300:UP:5,7400:CROSS:5` (create the save file: Yes; use a scratch card folder, `PS2X_MC_ROOT`), main menu at ~7700,
 `7900:DOWN:5,8000:CROSS:5` (Dragon Duel), `8400/8500/8600:DOWN:5,8700:CROSS:5` (CPU vs CPU), then CROSS every 150
@@ -290,7 +294,11 @@ Diagnostics/pacing: `PS2X_STALL_WATCHDOG=3` · `PS2X_CRASH_HANDLER=1` · `PS2X_S
 `PS2X_DEVICE_PROFILE=1` with the async trace (device time split) ·
 `PS2X_VU1_CENSUS=<file>` (per image and entry or resume pc: runs, resumes, cycles, host ns, translated runs and host ns) · `PS2X_VU1_LIFT=0` (interpret all VU1) ·
 `PS2X_VU1_LIFT_VERIFY=1` (every native VU1 run repeated by the interpreter; slow) · `PS2X_VU1_RUN_CAPTURE=<prefix>` ·
-`PS2X_VU1_ASYNC=0` (no device worker; on by default since 027) · `PS2X_GS_ASYNC=0` (GS inline, no worker thread) ·
+`PS2X_VU1_ASYNC=0` (no device worker; on by default since 027) · `PS2X_IOP_LIFT=0` (interpret all IOP code; 015) ·
+`PS2X_IOP_LIFT_VERIFY=1` (every native IOP run repeated by the interpreter and compared: registers, memory, hardware
+accesses, counters; `[iopnative:verify] MISMATCH` lines; slow) · `PS2X_IOP_LIFT_MODULES=<names>` (only these modules
+native, comma-separated, e.g. `CRI_ADXI`) · `PS2X_IOP_LIFT_STATS=1` (`[iopnative] second native=…%` once per IOP
+second; on with the verify switch) · `PS2X_GS_ASYNC=0` (GS inline, no worker thread) ·
 `PS2X_HOST_FPS` · `PS2X_DETERMINISTIC=1` (022, tests and replays: guest time from EE cycles only: fields and idle waits,
 the IOP on EE cycles / 8, GS and device workers off, one fixed host date, scripted input only, frames saved on the game's
 thread at field start; a slow PC runs the game slower than real time; normal play never sets it) ·
