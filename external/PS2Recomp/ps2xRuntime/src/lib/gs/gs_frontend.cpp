@@ -527,6 +527,7 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
     if (!m_privRegs)
         return request;
     request.pmode = m_privRegs->pmode;
+    request.smode1 = m_privRegs->smode1; // DBZIW 019
     request.smode2 = m_privRegs->smode2;
     request.dispfb1 = m_privRegs->dispfb1;
     request.display1 = m_privRegs->display1;

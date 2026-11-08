@@ -121,7 +121,18 @@ EeScheduler::~EeScheduler()
 void EeScheduler::setCrtMode(uint32_t mode) noexcept
 {
     if (mode == 2u || mode == 3u)
+    {
         m_palVideoMode.store(mode == 3u, std::memory_order_relaxed);
+        return;
+    }
+    // DBZIW 019: VESA/DTV modes have their own rates the scheduler does not model; say so instead of ignoring them.
+    std::fprintf(stderr, "[gs:setcrt] mode %u is neither NTSC (2) nor PAL (3): the field rate stays %s\n", mode,
+                 palVideoMode() ? "PAL (50 Hz)" : "NTSC (59.94 Hz)");
+}
+
+uint64_t EeScheduler::fieldPeriodCycles() const noexcept
+{
+    return vblankPeriodCycles(palVideoMode());
 }
 
 bool EeScheduler::palVideoMode() const noexcept
@@ -245,6 +256,7 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
     main.status = EeThreadStatus::Ready;
     m_threads.emplace(main.id, std::move(main));
     m_readyQueues[0].push_back(kMainThreadId);
+    m_scheduledPalPeriod = palVideoMode(); // DBZIW 019
     scheduleEvent(m_eeCycle + vblankPeriodCycles(palVideoMode()),
                   std::chrono::steady_clock::now() + vblankPeriod(palVideoMode()),
                   EeEvent{EeEventType::VBlankStart, 0, 0});
@@ -2329,8 +2341,16 @@ void EeScheduler::processDueDeadlines()
                 scheduleEvent(scheduled.deadlineCycle + kVBlankDurationCycles,
                               hostFieldStart + kVBlankDuration,
                               EeEvent{EeEventType::VBlankEnd, 0, m_vsyncTick + 1u});
-                scheduleEvent(scheduled.deadlineCycle + vblankPeriodCycles(palVideoMode()),
-                              hostFieldStart + vblankPeriod(palVideoMode()),
+                const bool pal = palVideoMode();
+                if (pal != m_scheduledPalPeriod) // DBZIW 019: the next field starts with the new rate
+                {
+                    m_scheduledPalPeriod = pal;
+                    std::fprintf(stderr, "[vsync:rate] tick=%llu the next field period is %s (%.3f ms)\n",
+                                 static_cast<unsigned long long>(m_vsyncTick), pal ? "PAL" : "NTSC",
+                                 static_cast<double>(vblankPeriod(pal).count()) / 1e6);
+                }
+                scheduleEvent(scheduled.deadlineCycle + vblankPeriodCycles(pal),
+                              hostFieldStart + vblankPeriod(pal),
                               EeEvent{EeEventType::VBlankStart, 0, 0});
             }
             processEvent(scheduled.event);

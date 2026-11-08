@@ -285,6 +285,8 @@ public:
     // CRT mode 2=NTSC, 3=PAL. Unsupported modes retain the previous cadence.
     void setCrtMode(uint32_t mode) noexcept;
     [[nodiscard]] bool palVideoMode() const noexcept;
+    // DBZIW 019: the EE cycles of the next field at the current mode (the CTest checks the switch with it).
+    [[nodiscard]] uint64_t fieldPeriodCycles() const noexcept;
     void postEvent(EeEvent event);
     [[nodiscard]] bool checkpointDue(uint32_t cycles = kGeneratedCheckpointCycles) noexcept;
     void accountCycles(uint32_t cycles) noexcept;
@@ -485,6 +487,7 @@ private:
     // DW5 009 v4.4 (015, design 1a): finishes an EE request whose IOP part has ended (RPC.cpp registers it).
     std::function<void(uint64_t)> m_iopRpcCompletion;
     std::atomic<bool> m_palVideoMode{false};
+    bool m_scheduledPalPeriod = false; // DBZIW 019: the mode the last VBlank was scheduled with ([vsync:rate] lines)
     uint32_t m_vsyncFlagAddress = 0;
     uint32_t m_vsyncTickAddress = 0;
     uint32_t m_gsVSyncCallback = 0;

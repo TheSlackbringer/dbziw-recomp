@@ -963,6 +963,7 @@ namespace ps2x_dev
             GSTrace::onTick(tick);
             stepRamDebug(tick);
             pollCtrl(tick);
+            stepStats(tick); // DBZIW 019: PS2X_STATS (dropped by accident in 3aa14be)
             if (!ps2x::deterministicMode()) // issue 022: there only the game's thread steps the script (field start)
                 stepInput(tick);
             stepBurst(tick);

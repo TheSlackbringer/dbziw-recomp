@@ -155,6 +155,11 @@ add_executable(dbziw_setup_disc_test tests/setup_disc_test.cpp)
 target_link_libraries(dbziw_setup_disc_test PRIVATE dbziw_setup_core)
 set_target_properties(dbziw_setup_disc_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
 add_test(NAME setup_disc COMMAND dbziw_setup_disc_test)
+# DBZIW 019: which video mode a run starts in (test, player's setting, launcher default, disc).
+add_executable(dbziw_video_mode_choice_test tests/video_mode_choice_test.cpp)
+target_include_directories(dbziw_video_mode_choice_test PRIVATE src)
+set_target_properties(dbziw_video_mode_choice_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
+add_test(NAME video_mode_choice COMMAND dbziw_video_mode_choice_test)
 # DBZIW 007: the setup CTests from DW5, disc-free.
 foreach(name setup_build setup_codegen setup_pipeline setup_install setup_cache setup_sync)
     add_executable(dbziw_${name}_test tests/${name}_test.cpp)
@@ -261,6 +266,7 @@ endforeach()
 dbziw_runtime_test(rom_profile src/dbziw_rom_profile.cpp) # DBZIW 037
 dbziw_runtime_test(keyboard_stick) # DBZIW 038
 dbziw_runtime_test(settings_file) # DBZIW 007
+dbziw_runtime_test(crt_mode_switch) # DBZIW 019
 set_tests_properties(keyboard_stick PROPERTIES ENVIRONMENT "PS2X_HOST_INPUT=100:W:1,200:S:1,300:A:1,400:D:1,500:W:1,500:A:1,600:W:1,600:S:1,700:A:1,700:D:1,800:UP:1,900:DOWN:1,1000:LEFT:1,1100:RIGHT:1,1200:W:1,1200:DOWN:1")
 # DBZIW 011: DW5 025's guards for the runtime speed fixes (A, B, C2, C3a, C3b, D) and DW5 023 7T.
 foreach(name dma_chain_snapshot vu1_xgkick_tail gif_arbiter_order)
@@ -362,6 +368,7 @@ if(DBZIW_BUILD_GAME)
             setup/wizard_console.cpp
             src/dbziw_movies.cpp
             src/dbziw_rom_profile.cpp
+            src/dbziw_video_mode.cpp
         )
         target_include_directories(dbziw PRIVATE "${DBZIW_GENERATED_DIR}" "${PS2RECOMP_DIR}/ps2xRuntime/src/lib")
         target_link_libraries(dbziw PRIVATE ps2_runtime rlImGui imgui dbziw_setup_ui dbziw_movie_input)
@@ -372,7 +379,7 @@ if(DBZIW_BUILD_GAME)
             set_target_properties(dbziw PROPERTIES UNITY_BUILD OFF)
         endif()
         set_source_files_properties(setup/wizard_console.cpp src/dbziw_movies.cpp src/dbziw_rom_profile.cpp
-            PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+            src/dbziw_video_mode.cpp PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
         # Translated VU1 microprograms (issue 012): written by dbziw_vu1lift (tools/regen.sh, the setup) from the
         # player's own executable into the ignored recomp/vu1/ folder, several files that compile in parallel. Game-derived: never committed. Without it every
         # VU1 program is interpreted.

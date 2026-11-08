@@ -11,8 +11,15 @@ namespace ps2_syscalls
 
         if (runtime)
         {
+            // DBZIW 019: every call, with its caller (rare: start-up and the game's NTSC/PAL switch).
+            std::fprintf(stderr, "[gs:setcrt] tick=%llu interlaced=%d mode=%d frame=%d ra=0x%08x\n",
+                         static_cast<unsigned long long>(runtime->eeScheduler().currentVSyncTick()), interlaced, videoMode,
+                         frameMode, getRegU32(ctx, 31));
             runtime->eeScheduler().setCrtMode(static_cast<uint32_t>(videoMode));
             auto &gs = runtime->memory().gs();
+            // DBZIW 019: as the BIOS does, SMODE1.CMOD (bits 13-14) gets the TV system: 2 NTSC, 3 PAL, 0 otherwise.
+            const uint64_t cmod = (videoMode == 2 || videoMode == 3) ? static_cast<uint64_t>(videoMode) : 0ull;
+            gs.smode1 = (gs.smode1 & ~(3ull << 13u)) | (cmod << 13u);
             const uint64_t smode2 =
                 (static_cast<uint64_t>(interlaced) & 0x1ull) |
                 ((static_cast<uint64_t>(frameMode) & 0x1ull) << 1);

@@ -23,7 +23,6 @@ A native PC port of **Dragon Ball Z: Infinite World** for the PlayStation 2, bui
 **Known issues:**
 
 - The opening movie can stall now and then on Windows.
-- Only the 50 Hz mode is available so far; 60 Hz is planned.
 - Two-player play and arcade fightsticks are not finished.
 - Long play sessions have not been tested.
 - There is no in-game settings menu yet: use the function keys below.
@@ -84,6 +83,16 @@ Gamepads work too.
 | **F5** | Cycle anti-aliasing (1× → 2× → 4× → 8× → 16×). |
 
 The resolution and anti-aliasing choices are remembered in `dbziw.ini`, in your settings folder.
+
+### 50 or 60 Hz
+
+The game starts in its own **60 Hz** mode, which suits most PC monitors. To play at the PAL disc's original **50 Hz**,
+add the line `video_mode=50` to `dbziw.ini` in your settings folder (see the table above; create the file if it is not
+there yet), then start the game again. Change it to `video_mode=60`, or remove it, to go back to 60 Hz.
+
+The disc's own hidden switch works too, while the game is at 50 Hz: on the language screen, hold **L1 + L2 + R1 + R2**
+(Q, E, Left Shift and Right Shift) until *"Would you like to change NTSC/PAL mode?"* appears, then choose **Yes** (Up,
+then Cross). This switches only the running game; `dbziw.ini` decides how it starts.
 
 ## Building from source
 

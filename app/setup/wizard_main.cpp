@@ -299,6 +299,8 @@ int main(int argc, char **argv)
         // Where the game keeps saves and settings: the user's folder, or with the game when portable.
         setEnvironment("PS2X_MC_ROOT", storage.userData / "mc0");
         setEnvironment("PS2X_SETTINGS_FILE", storage.configDir / "dbziw.ini");
+        // DBZIW 019: players start at the game's own 60 Hz unless their settings file says video_mode=50 (no file is written).
+        setEnvironment("PS2X_VIDEO_MODE_DEFAULT", "60");
         game = options.effectiveBuildDir() / (kWindows ? "dbziw.exe" : "dbziw");
         const fs::path gameFolder = discFolder(data, kSupportedDiscs[0]);
         const std::vector<std::string> gameArgs{"./SLES_553.47"};

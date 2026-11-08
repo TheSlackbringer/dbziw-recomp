@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "gs_vulkan_scanout.h"
+#include "runtime/gs/gs_scanout_mode.h"
 
 #include "runtime/gs/field_history.h"
 #include "gs_interface.hpp"
@@ -88,10 +89,12 @@ void presentVulkanGs(ParallelGS::GSInterface &gs, Vulkan::Device &device,
     if (!first.enabled && !second.enabled) return;
     pmode.EN1 = first.enabled; pmode.EN2 = second.enabled;
 
-    const bool isPal = (first.enabled && (first.height > 224 || (first.display.DH + 1u) > 480)) ||
-                       (second.enabled && (second.height > 224 || (second.display.DH + 1u) > 480)) ||
-                       ((request.display1 >> 44) & 0x7FFu) >= 480 ||
-                       ((request.display2 >> 44) & 0x7FFu) >= 480;
+    const bool heightSaysPal = (first.enabled && (first.height > 224 || (first.display.DH + 1u) > 480)) ||
+                               (second.enabled && (second.height > 224 || (second.display.DH + 1u) > 480)) ||
+                               ((request.display1 >> 44) & 0x7FFu) >= 480 ||
+                               ((request.display2 >> 44) & 0x7FFu) >= 480;
+    // DBZIW 019: the TV system SetGsCrt chose (SMODE1.CMOD); the height guess only when CMOD says neither.
+    const bool isPal = ps2x::gs::scanoutIsPal(request.smode1, heightSaysPal);
 
     static uint64_t s_lastLoggedTick = 0;
     if (request.vsyncTick == 0 || request.vsyncTick >= s_lastLoggedTick + 100u)
