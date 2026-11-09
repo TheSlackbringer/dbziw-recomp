@@ -25,7 +25,7 @@ void check(uint64_t tick, const char *what, uint16_t dpad, uint8_t lx, uint8_t l
     ps2_host_input::poll(tick);
     PSPadBackend backend;
     uint8_t data[32]{};
-    if (!backend.readState(0, 0, data, sizeof(data)))
+    if (!backend.readState(0, 0, data, sizeof(data), tick)) // 013 (DW5 023 5c): the sample of field `tick`
     {
         std::cerr << "FAILED: " << what << ": readState\n";
         ++g_failures;

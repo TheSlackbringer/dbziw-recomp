@@ -6,6 +6,7 @@
 #include "gs_record.h"
 #include <atomic>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -139,6 +140,12 @@ void GS::init(uint8_t *vram, uint32_t vramSize, GSRegisters *privRegs)
 void GS::reset()
 {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    // DW5 023 (013) step 2R: start over (the next field is read whatever it holds).
+    m_displayPagesValid = false;
+    m_drawOverlap = {};
+    m_displayWritesSinceRead = 0;
+    m_hasLastFieldRead = false;
+    m_forceFieldRead.store(true, std::memory_order_release);
     std::memset(m_ctx, 0, sizeof(m_ctx));
     m_prim = {};
     m_primRegister = {};
@@ -543,7 +550,234 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
     return request;
 }
 
-void GS::latchHostPresentationFrame()
+// DBZIW-DEBUG (DW5 023, 013): draw counts for PS2X_VBL_DRAW_TRACE (printed and reset by the EE scheduler).
+std::atomic<uint64_t> g_dbziwVblDisplayDraws{0}, g_dbziwVblOtherDraws{0};
+// DBZIW-DEBUG (DW5 023, 013): display-buffer draws counted in GS order, never reset (field reads print the difference).
+std::atomic<uint64_t> g_dbziwDisplayDrawsTotal{0};
+const uint64_t *g_dbziwEeCyclePtr = nullptr; // set by the scheduler's PS2X_VBL_DRAW_TRACE (DW5 023, 013)
+std::atomic<uint64_t> g_dbziwDisplayFirstCycle{UINT64_MAX}, g_dbziwDisplayLastCycle{0};
+
+namespace
+{
+    // DW5 023 (013) step 2R. GS local memory is 512 pages of 8 KB; a page's size in pixels depends on the format.
+    // Unknown formats use the smallest page (64x32), which can only count more pages (a field read stays "new").
+    void gsPageSize(uint8_t psm, uint32_t &width, uint32_t &height)
+    {
+        switch (psm)
+        {
+        case 0x02: case 0x0A: case 0x32: case 0x3A: // 16-bit colour and depth
+            width = 64u; height = 64u; return;
+        case 0x13: // 8-bit
+            width = 128u; height = 64u; return;
+        case 0x14: // 4-bit
+            width = 128u; height = 128u; return;
+        default: // 32/24-bit colour and depth, and the formats stored in their layout
+            width = 64u; height = 32u; return;
+        }
+    }
+
+    // Calls fn(page) for every page the rectangle x0..x1, y0..y1 (inclusive) of a buffer touches. basePage and fbw
+    // (in 64-pixel units) as in FRAME/DISPFB.
+    template <typename Fn>
+    void forEachGsPage(uint32_t basePage, uint32_t fbw, uint8_t psm, uint32_t x0, uint32_t y0, uint32_t x1,
+                       uint32_t y1, Fn &&fn)
+    {
+        if (x1 < x0 || y1 < y0)
+            return;
+        uint32_t pageWidth = 64u, pageHeight = 32u;
+        gsPageSize(psm, pageWidth, pageHeight);
+        const uint32_t perRow = std::max<uint32_t>(1u, (fbw * 64u + pageWidth - 1u) / pageWidth);
+        const uint32_t lastRow = std::min<uint32_t>(y1, 2047u) / pageHeight;
+        const uint32_t lastCol = std::min<uint32_t>(x1, 2047u) / pageWidth;
+        for (uint32_t row = y0 / pageHeight; row <= lastRow; ++row)
+            for (uint32_t col = x0 / pageWidth; col <= lastCol; ++col)
+                fn((basePage + row * perRow + col) & 511u);
+    }
+}
+
+const std::bitset<512> &GS::displayPagesUnlocked()
+{
+    // The pages the enabled read circuits show (PMODE EN1/EN2; DISPFB base, width, format, offset; DISPLAY size and
+    // magnification), recomputed only when those registers change.
+    DisplayRegs regs{};
+    if (m_privRegs)
+    {
+        regs.pmode = m_privRegs->pmode;
+        regs.smode2 = m_privRegs->smode2;
+        regs.dispfb1 = m_privRegs->dispfb1;
+        regs.display1 = m_privRegs->display1;
+        regs.dispfb2 = m_privRegs->dispfb2;
+        regs.display2 = m_privRegs->display2;
+    }
+    if (m_displayPagesValid && regs == m_displayPagesRegs)
+        return m_displayPages;
+    m_displayPages.reset();
+    const uint64_t dispfb[2] = {regs.dispfb1, regs.dispfb2};
+    const uint64_t display[2] = {regs.display1, regs.display2};
+    for (int circuit = 0; circuit < 2; ++circuit)
+    {
+        if ((regs.pmode & (1u << circuit)) == 0u)
+            continue;
+        const uint64_t fb = dispfb[circuit], disp = display[circuit];
+        const uint32_t magh = static_cast<uint32_t>((disp >> 23) & 0xFu) + 1u;
+        const uint32_t magv = static_cast<uint32_t>((disp >> 27) & 0x3u) + 1u;
+        const uint32_t width = (static_cast<uint32_t>((disp >> 32) & 0xFFFu) + 1u + magh - 1u) / magh;
+        const uint32_t height = (static_cast<uint32_t>((disp >> 44) & 0x7FFu) + 1u + magv - 1u) / magv;
+        const uint32_t dbx = static_cast<uint32_t>((fb >> 32) & 0x7FFu);
+        const uint32_t dby = static_cast<uint32_t>((fb >> 43) & 0x7FFu);
+        forEachGsPage(static_cast<uint32_t>(fb & 0x1FFu), static_cast<uint32_t>((fb >> 9) & 0x3Fu),
+                      static_cast<uint8_t>((fb >> 15) & 0x1Fu), dbx, dby, dbx + width - 1u, dby + height - 1u,
+                      [this](uint32_t page) { m_displayPages.set(page); });
+    }
+    m_displayPagesRegs = regs;
+    m_displayPagesValid = true;
+    ++m_displayPagesGeneration;
+    return m_displayPages;
+}
+
+void GS::noteDisplayWriteUnlocked(uint32_t basePage, uint32_t fbw, uint8_t psm, uint32_t x0, uint32_t y0,
+                                  uint32_t x1, uint32_t y1)
+{
+    const std::bitset<512> &shown = displayPagesUnlocked();
+    bool touches = false;
+    forEachGsPage(basePage, fbw, psm, x0, y0, x1, y1, [&](uint32_t page) { touches = touches || shown.test(page); });
+    if (touches)
+        ++m_displayWritesSinceRead;
+}
+
+void GS::noteDrawWriteUnlocked(const GSContext &context, bool textured)
+{
+    // DW5 023 (013) step 2K: a game that draws each picture for one interlaced field offsets it by half a line
+    // (XYOFFSET.ofy, 1/16 pixel units); a copy keeps the field of the buffer it copies.
+    const uint32_t source = context.tex0.tbp0 / 32u;
+    const uint8_t copied = textured && context.tex0.tbp0 % 32u == 0u && source < m_pictureTarget.size()
+                               ? m_pictureTarget[source] : 0u;
+    m_pictureTarget[context.frame.fbp & 0x1FFu] = copied ? copied : uint8_t((context.xyoffset.ofy & 8u) ? 2u : 1u);
+    // Draws come in long runs with the same frame and scissor: the overlap is computed once per run.
+    displayPagesUnlocked();
+    const GSFrameReg &f = context.frame;
+    const GSScissorReg &s = context.scissor;
+    const uint64_t frameKey = uint64_t(f.fbp) | (uint64_t(f.fbw) << 9) | (uint64_t(f.psm) << 15) |
+                              (uint64_t(context.zbuf.zbp) << 21) | (uint64_t(context.zbuf.psm) << 30) |
+                              (uint64_t(context.zbuf.zmask ? 1u : 0u) << 36);
+    const uint64_t scissorKey = uint64_t(s.x0) | (uint64_t(s.x1) << 16) | (uint64_t(s.y0) << 32) | (uint64_t(s.y1) << 48);
+    if (m_drawOverlap.frameKey != frameKey || m_drawOverlap.scissorKey != scissorKey ||
+        m_drawOverlap.displayGeneration != m_displayPagesGeneration)
+    {
+        const std::bitset<512> &shown = m_displayPages;
+        bool overlaps = false;
+        const auto test = [&](uint32_t page) { overlaps = overlaps || shown.test(page); };
+        forEachGsPage(f.fbp, f.fbw, f.psm, s.x0, s.y0, s.x1, s.y1, test);
+        if (!context.zbuf.zmask) // depth writes land in memory too
+            forEachGsPage(context.zbuf.zbp, f.fbw, context.zbuf.psm, s.x0, s.y0, s.x1, s.y1, test);
+        m_drawOverlap = {frameKey, scissorKey, m_displayPagesGeneration, overlaps};
+    }
+    if (m_drawOverlap.overlaps)
+        ++m_displayWritesSinceRead;
+}
+
+GSPresentationRequest GS::captureFieldScanoutRequest(uint64_t fieldTick) const
+{
+    // Called where the game's privileged register writes are applied in order (device worker, or the EE thread when
+    // the device runs inline), so these are the display registers at the end of the field.
+    GSPresentationRequest captured{};
+    if (!m_privRegs)
+        return captured;
+    captured.pmode = m_privRegs->pmode;
+    captured.smode2 = m_privRegs->smode2;
+    captured.dispfb1 = m_privRegs->dispfb1;
+    captured.display1 = m_privRegs->display1;
+    captured.dispfb2 = m_privRegs->dispfb2;
+    captured.display2 = m_privRegs->display2;
+    captured.bgcolor = m_privRegs->bgcolor;
+    captured.vsyncTick = fieldTick;
+    return captured;
+}
+
+void GS::submitFieldScanout(const GSPresentationRequest &captured)
+{
+    // GS side, after every GS packet the game sent during the field: the display buffer holds this field's picture.
+    // Under the GS state lock like the draws on this thread (a backend is replaced only under it), not the backend
+    // lifetime lock: the window holds that one while it waits for and copies a field, and the GS must not wait.
+    std::lock_guard<std::recursive_mutex> stateLock(m_stateMutex);
+    if (!m_backend || !m_privRegs)
+        return;
+    GSPresentationRequest request = buildPresentationRequestUnlocked(); // GS-side state in stream order
+    request.pmode = captured.pmode;
+    request.smode2 = captured.smode2;
+    request.dispfb1 = captured.dispfb1;
+    request.display1 = captured.display1;
+    request.dispfb2 = captured.dispfb2;
+    request.display2 = captured.display2;
+    request.bgcolor = captured.bgcolor;
+    request.vsyncTick = captured.vsyncTick;
+    {
+        // DW5 023 (013) step 2K: the field the displayed buffer's picture was drawn for (read circuit 1 when enabled).
+        const uint64_t dispfb = (captured.pmode & 1u) ? captured.dispfb1 : captured.dispfb2;
+        request.fieldTarget = int8_t(m_pictureTarget[dispfb & 0x1FFu]) - 1;
+    }
+
+    // DW5 023 (013) step 2R: when the game made no new picture during this field (no GS write touched the displayed
+    // buffer and the display registers are unchanged since the previous read), the buffer still holds the previous
+    // field's picture, made for the other field parity. Reading and weaving it as this field put the picture one line
+    // off; it is a repeat instead: not read, and the window keeps showing the previous picture (what a dropped frame
+    // looks like on a progressive display). A fact of the GS stream, no timing.
+    DisplayRegs regs{};
+    regs.pmode = captured.pmode;
+    regs.smode2 = captured.smode2;
+    regs.dispfb1 = captured.dispfb1;
+    regs.display1 = captured.display1;
+    regs.dispfb2 = captured.dispfb2;
+    regs.display2 = captured.display2;
+    regs.bgcolor = captured.bgcolor;
+    const bool regsChanged = !m_hasLastFieldRead || !(regs == m_lastFieldReadRegs);
+    const bool forced = m_forceFieldRead.exchange(false, std::memory_order_acq_rel);
+    const uint64_t writes = m_displayWritesSinceRead;
+    const bool repeat = !forced && !regsChanged && writes == 0u && m_fieldScanouts.load(std::memory_order_acquire);
+    m_displayWritesSinceRead = 0;
+    m_lastFieldReadRegs = regs;
+    m_hasLastFieldRead = true;
+
+    // DBZIW-DEBUG (DW5 023, 013): draws into the displayed buffer since the last VBlank event when the field is read
+    // (needs PS2X_VBL_DRAW_TRACE).
+    static const bool s_copyTrace = [] { const char *v = std::getenv("PS2X_VBL_DRAW_TRACE"); return v && *v && *v != '0'; }();
+    if (s_copyTrace)
+    {
+        // sinceLastRead: display-buffer draws in GS order since the previous field read (0 = the game made no copy
+        // during this field: the buffer still holds the previous field's picture). writes/regs/repeat: step 2R's
+        // decision (writes touching the displayed pages, display registers changed, field kept as a repeat).
+        static uint64_t s_lastTotal = 0;
+        const uint64_t total = g_dbziwDisplayDrawsTotal.load(std::memory_order_relaxed);
+        std::fprintf(stderr, "[field:read] field=%llu displayDraws=%llu sinceLastRead=%llu writes=%llu regs=%d repeat=%d\n",
+                     static_cast<unsigned long long>(request.vsyncTick),
+                     static_cast<unsigned long long>(g_dbziwVblDisplayDraws.load(std::memory_order_relaxed)),
+                     static_cast<unsigned long long>(total - s_lastTotal), static_cast<unsigned long long>(writes),
+                     (regsChanged || forced) ? 1 : 0, repeat ? 1 : 0);
+        s_lastTotal = total;
+    }
+    if (repeat)
+    {
+        // The field is done for the window (field pacing waits for it), but there is nothing new to read.
+        {
+            std::lock_guard<std::mutex> lock(m_fieldScanoutMutex);
+            m_lastSubmittedField = request.vsyncTick;
+            m_hasSubmittedField = true;
+        }
+        m_fieldScanoutCv.notify_all();
+        return;
+    }
+    const bool submitted = m_backend->SubmitFieldScanout(request);
+    m_fieldScanouts.store(submitted, std::memory_order_release);
+    if (submitted)
+    {
+        std::lock_guard<std::mutex> lock(m_fieldScanoutMutex);
+        m_lastSubmittedField = request.vsyncTick;
+        m_hasSubmittedField = true;
+    }
+    m_fieldScanoutCv.notify_all();
+}
+
+void GS::latchHostPresentationFrame(uint64_t waitForField, uint64_t maxField)
 {
     GSPresentationRequest request{};
     {
@@ -561,7 +795,32 @@ void GS::latchHostPresentationFrame()
     }
 
     bool updated = false;
+    if (m_fieldScanouts.load(std::memory_order_acquire))
     {
+        // DW5 023 (013): the fields are read on the GS side at the end of each field; the window only collects them.
+        if (waitForField != UINT64_MAX)
+        {
+            // Field pacing shows each field once: wait until that field's read has started (bounded by one PAL
+            // field so a stalled game never freezes the window).
+            std::unique_lock<std::mutex> lock(m_fieldScanoutMutex);
+            m_fieldScanoutCv.wait_for(lock, std::chrono::milliseconds(20), [this, waitForField]
+                                      { return m_hasSubmittedField && m_lastSubmittedField >= waitForField; });
+        }
+        std::lock_guard<std::mutex> backendLock(m_backendLifetimeMutex);
+        if (m_backend)
+            updated = m_backend->CollectFieldScanouts(m_latchedFrame, waitForField, maxField);
+    }
+    else
+    {
+        // DBZIW-DEBUG (DW5 023, 013): PS2X_LATCH_TRACE=1 logs the display registers each latch reads (field tick, frame
+        // buffer, display position). Separate from PS2X_WEAVE_TRACE: printing here, before the read, changes its timing.
+        static const bool s_latchTrace = [] { const char *v = std::getenv("PS2X_LATCH_TRACE"); return v && *v && *v != '0'; }();
+        if (s_latchTrace)
+            std::fprintf(stderr, "[latch] tick=%llu dispfb1=%llx display1=%llx dispfb2=%llx display2=%llx pmode=%llx smode2=%llx\n",
+                         static_cast<unsigned long long>(request.vsyncTick), static_cast<unsigned long long>(request.dispfb1),
+                         static_cast<unsigned long long>(request.display1), static_cast<unsigned long long>(request.dispfb2),
+                         static_cast<unsigned long long>(request.display2), static_cast<unsigned long long>(request.pmode),
+                         static_cast<unsigned long long>(request.smode2));
         std::lock_guard<std::mutex> backendLock(m_backendLifetimeMutex);
         if (m_backend)
         {
@@ -687,6 +946,7 @@ bool GS::copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
 
 // Set by GifArbiter::drain() for the packet being processed; 0 = direct call.
 extern thread_local int g_gifArbiterCurrentPath;
+
 
 GS::GifPathResumeState &GS::gifPathState()
 {
@@ -1495,6 +1755,19 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
     case GS_REG_TRXDIR:
     {
         m_trxdir = static_cast<uint32_t>(value & 0x3);
+        if (m_trxdir == 0u || m_trxdir == 2u)
+        {
+            // DW5 023 (013) step 2R: host->local and local->local transfers write their destination rectangle. DBP is
+            // in 64-word blocks (32 per page); a destination not on a page boundary can reach one page further.
+            const uint32_t page = m_bitbltbuf.dbp / 32u;
+            const uint32_t x0 = m_trxpos.dsax, y0 = m_trxpos.dsay;
+            const uint32_t x1 = x0 + std::max<uint32_t>(m_trxreg.rrw, 1u) - 1u;
+            const uint32_t y1 = y0 + std::max<uint32_t>(m_trxreg.rrh, 1u) - 1u;
+            noteDisplayWriteUnlocked(page, m_bitbltbuf.dbw, m_bitbltbuf.dpsm, x0, y0, x1, y1);
+            m_pictureTarget[page & 0x1FFu] = 0u; // DW5 023 (013) step 2K: not drawn for a field
+            if (m_bitbltbuf.dbp % 32u != 0u)
+                noteDisplayWriteUnlocked(page + 1u, m_bitbltbuf.dbw, m_bitbltbuf.dpsm, x0, y0, x1, y1);
+        }
 
         if (m_backend)
         {
@@ -1688,6 +1961,27 @@ void GS::vertexKick(bool drawing)
     {
         GSPrimitiveBatch batch = buildDrawBatch(needed);
         updatePreferredDisplaySourceForDraw(batch);
+        noteDrawWriteUnlocked(batch.state.context, batch.state.prim.tme); // DW5 023 (013) steps 2R, 2K
+        // DBZIW-DEBUG (DW5 023, 013): PS2X_VBL_DRAW_TRACE=1 counts draws into the displayed frame buffer and elsewhere;
+        // the EE scheduler prints and resets the counts at every VBlankStart/VBlankEnd (guest order with
+        // PS2X_GS_ASYNC=0 PS2X_VU1_ASYNC=0).
+        {
+            static const bool s_vblDrawTrace = [] { const char *v = std::getenv("PS2X_VBL_DRAW_TRACE"); return v && *v && *v != '0'; }();
+            if (s_vblDrawTrace && m_privRegs)
+            {
+                const bool toDisplay = batch.state.context.frame.fbp == static_cast<uint32_t>(m_privRegs->dispfb1 & 0x1FFu);
+                (toDisplay ? g_dbziwVblDisplayDraws : g_dbziwVblOtherDraws).fetch_add(1u, std::memory_order_relaxed);
+                if (toDisplay)
+                    g_dbziwDisplayDrawsTotal.fetch_add(1u, std::memory_order_relaxed);
+                if (toDisplay && g_dbziwEeCyclePtr)
+                {
+                    const uint64_t cycle = *g_dbziwEeCyclePtr;
+                    if (g_dbziwDisplayFirstCycle.load(std::memory_order_relaxed) == UINT64_MAX)
+                        g_dbziwDisplayFirstCycle.store(cycle, std::memory_order_relaxed);
+                    g_dbziwDisplayLastCycle.store(cycle, std::memory_order_relaxed);
+                }
+            }
+        }
         if (GSTrace::enabled())
         {
             const uint64_t traceTick = m_privRegs ? m_privRegs->vsyncTick.load(std::memory_order_acquire) : 0u;
@@ -1735,12 +2029,15 @@ void GS::processImageData(const uint8_t *data, uint32_t sizeBytes)
 bool GS::clearFramebufferContext(uint32_t contextIndex, uint32_t rgba)
 {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
-    return m_backend && m_backend->ClearFramebuffer(m_ctx[(contextIndex != 0u) ? 1 : 0], rgba);
+    const GSContext &context = m_ctx[(contextIndex != 0u) ? 1 : 0];
+    noteDrawWriteUnlocked(context); // DW5 023 (013) step 2R: a clear is a draw over the scissor
+    return m_backend && m_backend->ClearFramebuffer(context, rgba);
 }
 
 bool GS::clearActiveFramebuffer(uint32_t rgba)
 {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    noteDrawWriteUnlocked(activeContext()); // DW5 023 (013) step 2R
     return m_backend && m_backend->ClearFramebuffer(activeContext(), rgba);
 }
 
@@ -1859,6 +2156,7 @@ void GS::setResolutionScale(uint32_t scale)
     {
         m_backend->SetResolutionScale(scale);
     }
+    m_forceFieldRead.store(true, std::memory_order_release); // DW5 023 (013) 2R: the new output needs a fresh read
 }
 
 uint32_t GS::getResolutionScale() const
@@ -1875,6 +2173,7 @@ void GS::setAASamples(uint32_t samples)
 {
     std::lock_guard<std::mutex> lock(m_backendLifetimeMutex);
     if (m_backend) m_backend->SetAASamples(samples);
+    m_forceFieldRead.store(true, std::memory_order_release); // DW5 023 (013) 2R: the new output needs a fresh read
 }
 
 uint32_t GS::getAASamples() const

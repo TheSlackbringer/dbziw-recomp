@@ -1,3 +1,5 @@
+#include "runtime/hotkeys.h"
+#include "runtime/gs/gs_present_stats.h"
 #include "runtime/ps2_deterministic.h"
 #include "runtime/ps2_settings.h"
 #include "ps2_runtime.h"
@@ -8,6 +10,7 @@
 #include "runtime/host_input.h"
 #include "ps2_runtime_macros.h"
 #include "runtime/gs/gs_frontend.h"
+#include "runtime/gs/gs_present_stats.h"
 #include "gs/gs_trace.h"
 #include "runtime/ee_scheduler.h"
 #include "runtime/ps2_device_queue.h"
@@ -452,7 +455,7 @@ namespace
 // KFIV-PC dev harness (env-driven, no header changes):
 //   PS2X_HIDDEN=1            create the window hidden (headless-ish runs)
 //   PS2X_LATE_VBLANK=1       log fields emitted >3 ms after their wall-clock time ([late-vblank])
-//   PS2X_HUD_LOG=1           log the F3 overlay numbers every 0.5 s ([hud] tick fps vsync frameMs maxFrameMs)
+//   PS2X_HUD_LOG=1           log the F2 overlay numbers every 0.5 s ([hud] tick fps vsync frameMs maxFrameMs)
 //   PS2X_DUMP_DIR=<dir>      where frame PNGs go (default: cwd)
 //   PS2X_DUMP_EVERY=<n>      dump the presented frame every n vsync ticks
 //   PS2X_DUMP_FROM / _TO=<n> only dump ticks in [from, to] (issue 017, from DW5 70f3336: dumps of a few scenes)
@@ -478,6 +481,17 @@ namespace ps2x_dev
 
     static std::vector<PressEvent> s_pressEvents;
 
+    // DBZIW 013 (DW5 023 5c): the PS2X_HOST_INPUT/PS2X_INPUT presses of guest field `tick`, for the controller sample
+    // the game's first pad read of that field takes (ps2_pad.cpp). The events are parsed once at start-up.
+    uint32_t scriptedMaskAt(uint64_t tick)
+    {
+        uint32_t mask = 0u;
+        for (const PressEvent &ev : s_pressEvents)
+            if (tick >= ev.start && tick < ev.start + ev.duration)
+                mask |= ev.mask;
+        return mask;
+    }
+
     void stepInput(uint64_t tick)
     {
         uint32_t mask = 0u;
@@ -497,7 +511,11 @@ namespace ps2x_dev
                 std::fprintf(stderr, "[stepInput] tick=%llu mask=0x%04x\n", (unsigned long long)tick, mask);
             }
         }
-        g_padPressedMask.store(mask, std::memory_order_relaxed);
+        // DBZIW 013 (DW5 023 5c): in normal play the pad's per-field sample evaluates the script itself
+        // (scriptedMaskAt), so the window loop no longer publishes it a field late; the deterministic mode (022) steps
+        // it on the game's thread at each field start and its pad reads use this mask.
+        if (ps2x::deterministicMode())
+            g_padPressedMask.store(mask, std::memory_order_relaxed);
     }
 
     static std::vector<uint8_t> s_lastFrame;
@@ -1156,7 +1174,7 @@ static void saveIniText(const std::string &wantedKey, const std::string &value)
 
 static void saveIniValue(const std::string &wantedKey, uint32_t value) { saveIniText(wantedKey, std::to_string(value)); }
 
-// The player's F5 anti-aliasing choice (kept when F4 changes the output scale).
+// The player's F3 anti-aliasing choice (kept when F4 changes the output scale; F3 since 013, was F5).
 static uint32_t s_aaChoice = 1u;
 
 // Environment variables override the saved F4 settings for test runs.
@@ -1203,9 +1221,10 @@ namespace ps2x::settings
 }
 
 
-// Host window rate: a fixed 60 FPS by default. PS2X_HOST_FPS=<n> sets another fixed rate; PS2X_HOST_FPS=field
-// paces the window on every guest VBlankEnd instead (one host frame per field; issue 015 — makes the picture
-// jump up and down on a real desktop, owner 2026-10-19, so opt-in only).
+
+// Host window rate: field pacing by default, one window frame per game field (DW5 023, 013: the default since its
+// jump was fixed by reading each field at its end on the GS side). PS2X_HOST_FPS=<n> sets a fixed rate instead (60 =
+// the earlier default); PS2X_HOST_FPS=field is the default spelled out. Returns 0 for field pacing.
 static int configuredHostTargetFps()
 {
     if (const char *env = std::getenv("PS2X_HOST_FPS"))
@@ -1216,13 +1235,15 @@ static int configuredHostTargetFps()
         if (fps > 0)
             return fps;
     }
-    return 60;
+    return 0;
 }
 
 // The texture grows to the largest presented image (4x output); smaller frames
 // occupy its top-left corner. Display dimensions keep the logical aspect ratio.
+// paced (field pacing, DW5 023 (013) fix 2): the field the scheduler announced for this frame; nullptr = fixed rate.
 static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint32_t &outHeight,
-                        uint32_t &outDisplayWidth, uint32_t &outDisplayHeight)
+                        uint32_t &outDisplayWidth, uint32_t &outDisplayHeight,
+                        const EeScheduler::PresentationField *paced = nullptr)
 {
     static uint64_t s_lastPresentationTick = std::numeric_limits<uint64_t>::max();
     static uint64_t s_lastUploadedGeneration = 0u;
@@ -1237,17 +1258,89 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
     static bool s_hasUploadedFrame = false;
 
     const uint64_t currentTick = rt->eeScheduler().currentVSyncTick();
-    // Issue 022: in the deterministic mode the game's thread latches at each field start (deterministicField).
-    const bool needsLatch = !ps2x::deterministicMode() &&
-                            (!s_hasLatchedInitialFrame || currentTick != s_lastPresentationTick);
-    if (needsLatch)
+    // DBZIW-DEBUG (DW5 023, 013): PS2X_PRESENT_STATS=1 prints once a second the window frames, new pictures,
+    // field reads copied, copies of more than one field (skipped fields), frames over 25 ms and the longest gap.
     {
-        rt->gs().latchHostPresentationFrame();
-        s_lastPresentationTick = currentTick;
-        s_hasLatchedInitialFrame = true;
+        static const bool s_stats = [] { const char *v = std::getenv("PS2X_PRESENT_STATS"); return v && *v && *v != '0'; }();
+        static uint64_t s_frames = 0, s_slow = 0, s_windowStartNs = 0, s_lastNs = 0, s_lastGen = 0, s_newPictures = 0;
+        static double s_maxMs = 0.0;
+        if (s_stats)
+        {
+            const uint64_t now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
+            if (s_lastNs != 0u)
+            {
+                const double ms = static_cast<double>(now - s_lastNs) / 1e6;
+                s_maxMs = std::max(s_maxMs, ms);
+                s_slow += ms > 25.0 ? 1u : 0u;
+            }
+            if (s_windowStartNs == 0u)
+                s_windowStartNs = now;
+            const uint64_t gen = rt->gs().hostPresentationGeneration();
+            s_newPictures += gen != s_lastGen ? 1u : 0u;
+            s_lastGen = gen;
+            ++s_frames;
+            s_lastNs = now;
+            if (now - s_windowStartNs >= 1000000000ull)
+            {
+                std::fprintf(stderr, "[present:stats] tick=%llu frames=%llu newPictures=%llu readsCopied=%llu multiReadCopies=%llu slow=%llu maxMs=%.1f\n",
+                             static_cast<unsigned long long>(currentTick), static_cast<unsigned long long>(s_frames),
+                             static_cast<unsigned long long>(s_newPictures),
+                             static_cast<unsigned long long>(g_dbziwReadsCopied.exchange(0u)),
+                             static_cast<unsigned long long>(g_dbziwMultiReadCopies.exchange(0u)),
+                             static_cast<unsigned long long>(s_slow), s_maxMs);
+                s_frames = s_slow = s_newPictures = 0u;
+                s_maxMs = 0.0;
+                s_windowStartNs = now;
+            }
+        }
+    }
+    // Issue 022: in the deterministic mode the game's thread latches at each field start (deterministicField).
+    // DW5 023 (013): fields read on the GS side finish a little after their field ends: the window collects every
+    // frame, so a field finished between two field changes is not skipped (a frame without a new field uploads nothing).
+    bool needsLatch = false;
+    if (ps2x::deterministicMode())
+    {
+    }
+    else if (paced)
+    {
+        // DW5 023 (013) fix 2: field pacing; the frame shows exactly the field the scheduler announced, and collects no
+        // newer field's read. A frame while the game is stalled (not fresh) shows the last picture again; it only
+        // collects a late read of the field already announced.
+        constexpr uint64_t kNone = std::numeric_limits<uint64_t>::max();
+        needsLatch = paced->fresh || !s_hasLatchedInitialFrame || rt->gs().fieldScanoutsActive();
+        if (needsLatch)
+        {
+            rt->gs().latchHostPresentationFrame(paced->fresh ? paced->field : kNone, paced->field);
+            s_hasLatchedInitialFrame = true;
+        }
+    }
+    else
+    {
+        needsLatch = !s_hasLatchedInitialFrame || currentTick != s_lastPresentationTick || rt->gs().fieldScanoutsActive();
+        if (needsLatch)
+        {
+            rt->gs().latchHostPresentationFrame();
+            s_lastPresentationTick = currentTick;
+            s_hasLatchedInitialFrame = true;
+        }
     }
 
     const uint64_t generation = rt->gs().hostPresentationGeneration();
+    // DBZIW-DEBUG (DW5 023, 013): PS2X_WEAVE_TRACE=1 also logs every window frame: field it shows, whether it latched a
+    // new picture and whether that picture was uploaded (a repeat shows the previous one again).
+    static const bool s_presentTrace = [] { const char *v = std::getenv("PS2X_WEAVE_TRACE"); return v && *v && *v != '0'; }();
+    if (s_presentTrace)
+    {
+        static uint64_t s_hostFrame = 0u;
+        const auto nowNs = std::chrono::duration_cast<std::chrono::microseconds>(
+                               std::chrono::steady_clock::now().time_since_epoch()).count();
+        std::fprintf(stderr, "[present] host=%llu us=%lld tick=%llu latched=%d gen=%llu upload=%d\n",
+                     static_cast<unsigned long long>(s_hostFrame++), static_cast<long long>(nowNs),
+                     static_cast<unsigned long long>(currentTick), needsLatch ? 1 : 0,
+                     static_cast<unsigned long long>(generation),
+                     (!s_hasUploadedFrame || (needsLatch && generation != s_lastUploadedGeneration)) ? 1 : 0);
+    }
     if (s_hasUploadedFrame && (!needsLatch || generation == s_lastUploadedGeneration))
     {
         outWidth = (s_lastWidth != 0u) ? s_lastWidth : FB_WIDTH;
@@ -1351,6 +1444,68 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
         ps2x_dev::s_lastFrame.swap(s_paddedUploadBuffer);
     }
 
+    // DBZIW-DEBUG (DW5 023, 013): PS2X_WEAVE_TRACE=1 logs a fingerprint of every uploaded picture (FNV-1a over the copied
+    // rows) and of its top and bottom half, so a picture that alternates between two versions shows up.
+    {
+        static const bool s_hashTrace = [] { const char *v = std::getenv("PS2X_WEAVE_TRACE"); return v && *v && *v != '0'; }();
+        if (s_hashTrace)
+        {
+            const size_t rowBytes = static_cast<size_t>(texWidth) * 4u;
+            // Row profile (mean brightness of every row, two hex digits per row): a picture that moves vertically shows
+            // up as a shifted profile without writing whole frames (PNG dumps change the timing and hide the jump).
+            // PS2X_WEAVE_TRACE_COLS=x0:x1 (DBZIW-DEBUG (DW5 023, 013) 2J): the row profile covers only these columns, e.g. a
+            // part of the HUD that never changes, so a picture that moves by one line shows without the 3D scene's noise.
+            static const std::pair<uint32_t, uint32_t> s_cols = []
+            {
+                unsigned a = 0u, b = 0u;
+                const char *v = std::getenv("PS2X_WEAVE_TRACE_COLS");
+                if (v && std::sscanf(v, "%u:%u", &a, &b) == 2 && b > a)
+                    return std::pair<uint32_t, uint32_t>(a, b);
+                return std::pair<uint32_t, uint32_t>(0u, 0xFFFFFFFFu);
+            }();
+            const uint32_t x0 = std::min(s_cols.first, copyWidth), x1 = std::max(x0 + 1u, std::min(s_cols.second, copyWidth));
+            // Both lines are computed and written on the log helper from a copy of the uploaded rows (DW5 023 (013)
+            // criterion 6: the window does not spend its frame on the trace).
+            std::vector<uint8_t> rowsCopy(ps2x_dev::s_lastFrame.begin(),
+                                          ps2x_dev::s_lastFrame.begin() +
+                                              static_cast<std::ptrdiff_t>(std::min(ps2x_dev::s_lastFrame.size(),
+                                                                                   rowBytes * copyHeight)));
+            const size_t copyBytes = rowsCopy.size();
+            ps2x::stdio_pump::postDeferred([pixels = std::move(rowsCopy), rowBytes, copyWidth, copyHeight, x0, x1,
+                                            tick = currentTick]
+            {
+                auto fnv = [&](uint32_t y0, uint32_t y1)
+                {
+                    uint64_t h = 1469598103934665603ull;
+                    for (uint32_t y = y0; y < y1; ++y)
+                    {
+                        const uint8_t *row = pixels.data() + static_cast<size_t>(y) * rowBytes;
+                        for (size_t i = 0; i < static_cast<size_t>(copyWidth) * 4u; ++i)
+                            h = (h ^ row[i]) * 1099511628211ull;
+                    }
+                    return h;
+                };
+                std::fprintf(stderr, "[upload:hash] tick=%llu all=%016llx top=%016llx bottom=%016llx h=%u\n",
+                             static_cast<unsigned long long>(tick), static_cast<unsigned long long>(fnv(0, copyHeight)),
+                             static_cast<unsigned long long>(fnv(0, copyHeight / 2u)),
+                             static_cast<unsigned long long>(fnv(copyHeight / 2u, copyHeight)), copyHeight);
+                std::string rows;
+                for (uint32_t y = 0; y < copyHeight; ++y)
+                {
+                    const uint8_t *row = pixels.data() + static_cast<size_t>(y) * rowBytes;
+                    uint32_t sum = 0u;
+                    for (uint32_t x = x0; x < x1 && x < copyWidth; ++x)
+                        sum += row[x * 4u] + row[x * 4u + 1u] + row[x * 4u + 2u];
+                    const uint32_t mean = sum / ((x1 - x0) * 3u);
+                    static const char kHex[] = "0123456789abcdef";
+                    rows.push_back(kHex[(mean >> 4) & 15u]);
+                    rows.push_back(kHex[mean & 15u]);
+                }
+                std::fprintf(stderr, "[upload:rows] tick=%llu w=%u h=%u %s\n", static_cast<unsigned long long>(tick),
+                             copyWidth, copyHeight, rows.c_str());
+            }, copyBytes);
+        }
+    }
     ps2x_dev::s_lastFrameW = copyWidth;
     ps2x_dev::s_lastFrameH = copyHeight;
     ps2x_dev::s_lastFrameRows = texHeight;
@@ -1765,8 +1920,15 @@ bool PS2Runtime::initialize(const char *title)
 #else
         {
             const char *hidden = std::getenv("PS2X_HIDDEN");
+            // DBZIW-DEBUG (DW5 023, 013) (step 3 experiment): PS2X_VSYNC=1 swaps on the display's refresh (swap interval 1)
+            // instead of immediately; with PS2X_HOST_FPS=field that is one picture per PS2 field, shown on a refresh.
+            const char *vsync = std::getenv("PS2X_VSYNC");
+            const bool vsyncOn = vsync && *vsync == '1';
             SetConfigFlags(FLAG_WINDOW_RESIZABLE |
-                           ((hidden && *hidden && *hidden != '0') ? FLAG_WINDOW_HIDDEN : 0));
+                           ((hidden && *hidden && *hidden != '0') ? FLAG_WINDOW_HIDDEN : 0) |
+                           (vsyncOn ? FLAG_VSYNC_HINT : 0));
+            if (vsyncOn)
+                std::fprintf(stderr, "[window] vsync on (PS2X_VSYNC=1)\n");
         }
         InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
         InitAudioDevice();
@@ -3704,12 +3866,16 @@ void PS2Runtime::run()
 
     uint64_t tick = 0;
     const int hostFpsOverride = configuredHostTargetFps();
-    uint64_t lastPresentationField = 0;
+    uint64_t lastShownField = ps2x::presentation::kNoField; // DW5 023 (013) fix 2: the field the last frame showed
     while (!isStopRequested() && !gameThreadFinished.load(std::memory_order_acquire))
     {
-        if (hostFpsOverride == 0 && m_eeScheduler)
+        const bool fieldPaced = hostFpsOverride == 0 && m_eeScheduler; // deterministic mode: UploadFrame ignores it (022)
+        EeScheduler::PresentationField paced{};
+        if (fieldPaced)
         {
-            m_eeScheduler->waitForNextPresentationField(lastPresentationField);
+            paced = m_eeScheduler->waitForPresentationField(lastShownField);
+            if (paced.fresh)
+                lastShownField = paced.field;
         }
         m_audioBackend.updatePcmStream();
         devHarness.step(m_eeScheduler->currentVSyncTick());
@@ -3750,7 +3916,7 @@ void PS2Runtime::run()
         uint32_t presentHeight = DEFAULT_DISPLAY_HEIGHT;
         uint32_t displayWidth = FB_WIDTH;
         uint32_t displayHeight = DEFAULT_DISPLAY_HEIGHT;
-        UploadFrame(frameTex, this, presentWidth, presentHeight, displayWidth, displayHeight);
+        UploadFrame(frameTex, this, presentWidth, presentHeight, displayWidth, displayHeight, fieldPaced ? &paced : nullptr);
 
         BeginDrawing();
         ClearBackground(BLACK);
@@ -3770,6 +3936,19 @@ void PS2Runtime::run()
             (screenHeight - dstHeight) * 0.5f,
             dstWidth,
             dstHeight};
+        // DBZIW-DEBUG (DW5 023, 013): PS2X_WEAVE_TRACE=1 logs the window size and the picture rectangle whenever they change.
+        {
+            static const bool s_rectTrace = [] { const char *v = std::getenv("PS2X_WEAVE_TRACE"); return v && *v && *v != '0'; }();
+            static float s_lastRect[6] = {};
+            const float rect[6] = {screenWidth, screenHeight, dstRect.x, dstRect.y, dstRect.width, dstRect.height};
+            if (s_rectTrace && std::memcmp(rect, s_lastRect, sizeof(rect)) != 0)
+            {
+                std::fprintf(stderr, "[draw:rect] tick=%llu screen=%.0fx%.0f dst=%.1f,%.1f %.1fx%.1f src=%.0fx%.0f\n",
+                             static_cast<unsigned long long>(m_eeScheduler->currentVSyncTick()), screenWidth, screenHeight,
+                             dstRect.x, dstRect.y, dstRect.width, dstRect.height, srcWidth, srcHeight);
+                std::memcpy(s_lastRect, rect, sizeof(rect));
+            }
+        }
         DrawTexturePro(frameTex, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
         ps2_host_input::drawMouseCaptureIndicator(dstRect.x, dstRect.y, dstRect.width, dstRect.height);
         if (m_debugUiInitialized && m_debugUiDrawCallback)
@@ -3778,25 +3957,26 @@ void PS2Runtime::run()
         }
         devHarness.captureHostFrame();
 
-        // On-screen FPS & VSync rate overlay for playtesting (disabled by default for release; enabled via PS2X_FPS=1 or toggled with F3)
+        // On-screen FPS & VSync rate overlay for playtesting (disabled by default for release; enabled via PS2X_FPS=1 or
+        // toggled with its key, F2: runtime/hotkeys.h, 013)
         static bool s_showFpsOverlay = []() {
             const char *env = std::getenv("PS2X_FPS");
             return env && *env && *env != '0';
         }();
-        if (IsKeyPressed(KEY_F3))
+        if (IsKeyPressed(ps2x::hotkeys::key(ps2x::hotkeys::Action::FpsOverlay)))
         {
             s_showFpsOverlay = !s_showFpsOverlay;
         }
-        // F2: build ID and game tick, to match screenshots with logs (off by default).
+        // Build ID and game tick (F8), to match screenshots with logs (off by default).
         static bool s_showBuildOverlay = false;
-        if (IsKeyPressed(KEY_F2))
+        if (IsKeyPressed(ps2x::hotkeys::key(ps2x::hotkeys::Action::BuildOverlay)))
         {
             s_showBuildOverlay = !s_showBuildOverlay;
         }
-        // F4 cycles native/2x/4x output; F5 cycles the anti-aliasing choice (1-16 samples
+        // F4 cycles native/2x/4x output; F3 cycles the anti-aliasing choice (1-16 samples
         // per output pixel). The two are independent: 2x/4x use 4/16 samples to build the
         // larger image and AA multiplies that, up to the 16-sample limit (4x: no extra AA).
-        if (IsKeyPressed(KEY_F4))
+        if (IsKeyPressed(ps2x::hotkeys::key(ps2x::hotkeys::Action::OutputScale)))
         {
             const uint32_t current = m_gs.getResolutionScale();
             m_gs.setResolutionScale(current == 1u ? 2u : current == 2u ? 4u : 1u);
@@ -3804,14 +3984,14 @@ void PS2Runtime::run()
                 m_gs.setResolutionScale(1u);
             saveIniValue("resolution_scale", m_gs.getResolutionScale());
         }
-        if (IsKeyPressed(KEY_F5))
+        if (IsKeyPressed(ps2x::hotkeys::key(ps2x::hotkeys::Action::AntiAliasing)))
         {
             s_aaChoice = s_aaChoice >= 16u ? 1u : s_aaChoice * 2u;
             m_gs.setAASamples(s_aaChoice);
             saveIniValue("aa_samples", s_aaChoice);
         }
 
-        // F3 numbers (issue 014), about once a second. VSync = guest fields per second, timed by the fields'
+        // F2 numbers (issue 014; F3 before 013), about once a second. VSync = guest fields per second, timed by the fields'
         // own emission times (so a steady 50 reads 50.0, not 49/51 from where the window falls). FPS = the
         // game's frame rate over the same span: fields in which it finished a frame (ps2x::device::gameFrameCount)
         // or, during movies, the pictures the movie decoder handed to the game (its frame syncs do not always
@@ -3856,7 +4036,7 @@ void PS2Runtime::run()
                 s_vsyncRate = 0.0f; // no new field: the guest clock is stalled
                 s_gameFps = static_cast<float>(frames / elapsedFps);
             }
-            // PS2X_HUD_LOG=1 logs the F3 overlay numbers (game FPS, guest VSync, worst host frame) for unattended runs.
+            // PS2X_HUD_LOG=1 logs the F2 overlay numbers (game FPS, guest VSync, worst host frame) for unattended runs.
             static const bool s_hudLog = [] { const char *v = std::getenv("PS2X_HUD_LOG"); return v && *v && *v != '0'; }();
             if (s_hudLog)
                 std::fprintf(stderr, "[hud] tick=%llu fps=%.1f vsync=%.1f frameMs=%.1f maxFrameMs=%.1f\n",

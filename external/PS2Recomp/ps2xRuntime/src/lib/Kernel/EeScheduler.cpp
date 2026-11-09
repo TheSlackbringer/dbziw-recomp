@@ -234,6 +234,10 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
     m_invocationSequence = 0;
     m_vsyncTick.store(0u, std::memory_order_release);
     m_presentationTick.store(0u, std::memory_order_release);
+    {
+        std::lock_guard presentationLock(m_presentationMutex);
+        m_scheduledEndKnown = false; // DW5 023 (013) fix 2
+    }
     m_palVideoMode.store(false, std::memory_order_relaxed);
     m_vsyncFlagAddress = 0;
     m_vsyncTickAddress = 0;
@@ -1624,24 +1628,27 @@ void EeScheduler::stepVSyncTicksForTesting(uint64_t ticks) noexcept
     m_vsyncTick.fetch_add(ticks, std::memory_order_acq_rel);
 }
 
-uint64_t EeScheduler::waitForNextPresentationField(uint64_t &lastTick) const
+EeScheduler::PresentationField EeScheduler::waitForPresentationField(uint64_t lastShown) const
 {
-    // The host window shows each guest field once: wait for the next VBlankEnd (or one field period, so the
-    // window stays responsive while the game is stalled).
-    uint64_t cur = m_presentationTick.load(std::memory_order_acquire);
-    if (cur <= lastTick)
-    {
-        std::unique_lock lock(m_presentationMutex);
-        m_presentationCv.wait_for(lock, vblankPeriod(palVideoMode()), [this, lastTick]()
-                                  { return m_presentationTick.load(std::memory_order_acquire) > lastTick ||
-                                           m_stopRequested.load(std::memory_order_acquire); });
-        cur = m_presentationTick.load(std::memory_order_acquire);
-    }
-    if (cur > lastTick)
-    {
-        lastTick = cur;
-    }
-    return cur != 0u ? cur : m_vsyncTick.load(std::memory_order_acquire);
+    // DW5 023 (013) criterion 3 (fix 2): one field identity, the announced field. The window waits for a field newer than
+    // the one it showed; it gives up only when that field is a whole field past its scheduled end (the game is
+    // stalled), so ordinary jitter never makes it show the previous picture again (023 work.md 2026-10-31).
+    namespace pp = ps2x::presentation;
+    const auto period = vblankPeriod(palVideoMode());
+    std::unique_lock lock(m_presentationMutex);
+    const auto announced = [this] { return pp::announcedField(m_presentationTick.load(std::memory_order_acquire)); };
+    const auto now = std::chrono::steady_clock::now();
+    const uint64_t wanted = lastShown == pp::kNoField ? 0u : lastShown + 1u;
+    auto scheduledEnd = now;
+    if (m_scheduledEndKnown && wanted >= m_scheduledEndField)
+        scheduledEnd = m_scheduledEndTime + period * static_cast<int64_t>(wanted - m_scheduledEndField);
+    m_presentationCv.wait_until(lock, pp::giveUp(scheduledEnd, now, period), [&] {
+        return pp::isNewer(announced(), lastShown) || m_stopRequested.load(std::memory_order_acquire);
+    });
+    const uint64_t field = announced();
+    if (pp::isNewer(field, lastShown))
+        return {field, true};
+    return {lastShown, false};
 }
 
 uint32_t EeScheduler::setGsVSyncCallback(uint32_t callback, uint32_t gp, uint32_t sp)
@@ -2341,6 +2348,14 @@ void EeScheduler::processDueDeadlines()
                 scheduleEvent(scheduled.deadlineCycle + kVBlankDurationCycles,
                               hostFieldStart + kVBlankDuration,
                               EeEvent{EeEventType::VBlankEnd, 0, m_vsyncTick + 1u});
+                {
+                    // DW5 023 (013) fix 2: the end of the field ending now (m_vsyncTick) is announced at that VBlankEnd;
+                    // the window's stall rule measures lateness against it (later fields: one period apart).
+                    std::lock_guard presentationLock(m_presentationMutex);
+                    m_scheduledEndField = m_vsyncTick;
+                    m_scheduledEndTime = hostFieldStart + kVBlankDuration;
+                    m_scheduledEndKnown = true;
+                }
                 const bool pal = palVideoMode();
                 if (pal != m_scheduledPalPeriod) // DBZIW 019: the next field starts with the new rate
                 {
@@ -2360,6 +2375,63 @@ void EeScheduler::processDueDeadlines()
 
 static unsigned g_dbziwCbQueued = 0; // DBZIW-DEBUG
 extern std::atomic<uint32_t> g_dbziwMpegDemux, g_dbziwMpegGetPic, g_dbziwMpegPictures, g_dbziwStrEvents[8];
+extern std::atomic<uint64_t> g_dbziwVblDisplayDraws, g_dbziwVblOtherDraws; // DBZIW-DEBUG (DW5 023, 013)
+// DBZIW-DEBUG (DW5 023, 013): guest cycle of the first/last draw into the displayed buffer since the last VBlankStart
+// (written by the GS frontend; only meaningful with PS2X_GS_ASYNC=0 PS2X_VU1_ASYNC=0, where draws run on this thread).
+// Defined in gs_frontend.cpp, which writes them (so test programs that link the GS front end alone need no scheduler).
+extern const uint64_t *g_dbziwEeCyclePtr;
+extern std::atomic<uint64_t> g_dbziwDisplayFirstCycle, g_dbziwDisplayLastCycle;
+
+// DBZIW-DEBUG (DW5 023, 013): PS2X_VBL_DRAW_TRACE=1 prints the GS draws since the previous VBlank event (into the
+// displayed frame buffer / elsewhere) at every VBlankStart and VBlankEnd; at VBlankStart also when (microseconds after
+// the previous VBlankStart, guest cycles) the first and last display-buffer draw of the field happened.
+static void dbziwVblDrawTrace(const char *edge, uint64_t tick, const uint64_t &eeCycle)
+{
+    static const bool s_on = [] { const char *v = std::getenv("PS2X_VBL_DRAW_TRACE"); return v && *v && *v != '0'; }();
+    if (!s_on)
+        return;
+    static uint64_t s_fieldStartCycle = 0u;
+    g_dbziwEeCyclePtr = &eeCycle;
+    const uint64_t display = g_dbziwVblDisplayDraws.exchange(0u, std::memory_order_relaxed);
+    const uint64_t other = g_dbziwVblOtherDraws.exchange(0u, std::memory_order_relaxed);
+    const auto us = [](uint64_t cycles) { return static_cast<double>(cycles) * 1e6 / static_cast<double>(EeScheduler::kEeClockHz); };
+    if (std::strcmp(edge, "start") == 0)
+    {
+        const uint64_t first = g_dbziwDisplayFirstCycle.exchange(UINT64_MAX, std::memory_order_relaxed);
+        const uint64_t last = g_dbziwDisplayLastCycle.exchange(0u, std::memory_order_relaxed);
+        const bool any = first != UINT64_MAX && first >= s_fieldStartCycle;
+        std::fprintf(stderr, "[vbl] %s tick=%llu display=%llu other=%llu fieldUs=%.0f firstDisplayUs=%.0f lastDisplayUs=%.0f\n",
+                     edge, static_cast<unsigned long long>(tick), static_cast<unsigned long long>(display),
+                     static_cast<unsigned long long>(other), us(eeCycle - s_fieldStartCycle),
+                     any ? us(first - s_fieldStartCycle) : -1.0, any ? us(last - s_fieldStartCycle) : -1.0);
+        s_fieldStartCycle = eeCycle;
+        return;
+    }
+    std::fprintf(stderr, "[vbl] %s tick=%llu display=%llu other=%llu atUs=%.0f\n", edge, static_cast<unsigned long long>(tick),
+                 static_cast<unsigned long long>(display), static_cast<unsigned long long>(other),
+                 us(eeCycle - s_fieldStartCycle));
+}
+
+void EeScheduler::requestFieldScanout(uint64_t field)
+{
+    // DW5 023 (013): the CRTC has finished field `field`: the PS2 showed the display buffer as the game left it during
+    // the field (the game copies each field's picture at that field's VBlankEnd). The registers are captured after every
+    // register write the game queued before this point, the read runs after every GS packet it sent before it.
+    // DBZIW-DEBUG: PS2X_FIELD_SCANOUT=0 keeps the old window-time read (A/B comparisons).
+    static const bool s_off = [] { const char *v = std::getenv("PS2X_FIELD_SCANOUT"); return v && v[0] == '0'; }();
+    // DBZIW 013: the deterministic mode (022) keeps its own latch on the game's thread at each field start (its frame
+    // dumps and comparisons are defined there); field reads run only in normal play.
+    if (s_off || ps2x::deterministicMode())
+        return;
+    PS2Runtime &runtime = m_runtime;
+    auto captureAndQueue = [&runtime, field]
+    {
+        const GSPresentationRequest captured = runtime.gs().captureFieldScanoutRequest(field);
+        runtime.gifArbiter().submitCall([&runtime, captured] { runtime.gs().submitFieldScanout(captured); });
+    };
+    if (!ps2x::device::submitGsCall(runtime.memory(), captureAndQueue))
+        captureAndQueue();
+}
 
 namespace ps2x_dev
 {
@@ -2376,6 +2448,8 @@ void EeScheduler::processEvent(const EeEvent &event)
         requestStop();
         break;
     case EeEventType::VBlankStart:
+        dbziwVblDrawTrace("start", m_vsyncTick + 1u, m_eeCycle); // DBZIW-DEBUG (DW5 023, 013)
+        requestFieldScanout(m_vsyncTick); // DW5 023 (013): the field that just ended is read in GS order
         ++m_vsyncTick;
         if (m_vsyncTick == 1u && ps2x::deterministicMode()) // issue 022: name the mode in every log
             std::fprintf(stderr, "[deterministic] on: fields, IOP and idle waits on guest cycles; GS inline; "
@@ -2465,6 +2539,7 @@ void EeScheduler::processEvent(const EeEvent &event)
         completeExternalWait(event.id, event.value, KE_OK);
         break;
     case EeEventType::VBlankEnd:
+        dbziwVblDrawTrace("end", m_vsyncTick, m_eeCycle); // DBZIW-DEBUG (DW5 023, 013)
         dispatchIrq(false, 3u);
         {
             std::lock_guard lock(m_presentationMutex);
@@ -3044,6 +3119,10 @@ bool EeScheduler::loadState(std::istream &in)
     m_eeCycle = hdr.eeCycle;
     m_sliceEndCycle = hdr.sliceEndCycle;
     m_palVideoMode.store(hdr.palVideoMode != 0, std::memory_order_relaxed);
+    {
+        std::lock_guard presentationLock(m_presentationMutex);
+        m_scheduledEndKnown = false; // DW5 023 (013) fix 2: rescheduled after the load
+    }
     m_currentThreadId = hdr.currentThreadId;
     m_nextThreadId = hdr.nextThreadId;
     m_nextSemaphoreId = hdr.nextSemaphoreId;

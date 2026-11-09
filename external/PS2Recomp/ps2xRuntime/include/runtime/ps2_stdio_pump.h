@@ -12,9 +12,22 @@
 // keeps the old direct writes for crash hunting.
 
 #include <cstddef>
+#include <cstdint>
+#include <functional>
 
 namespace ps2x::stdio_pump
 {
+    // DW5 023 (013) criterion 6: debug lines that are expensive to compute (PS2X_WEAVE_TRACE: row profiles and hashes of
+    // every window picture, ~11 ms per window frame on a laptop at 4x) run on one helper thread, so the thread that posts
+    // them (the window loop) does not spend its frame on them. Jobs run in the order they were posted; each one owns a
+    // copy of the data it needs (`bytes`: its size). Above kDeferredBytes queued the poster waits until the helper has
+    // caught up (nothing is ever dropped) and writes a [log:deferred-wait] line, so a disturbed measurement shows.
+    // A job larger than the budget is accepted when nothing is queued. drain() runs every queued job first.
+    inline constexpr size_t kDeferredBytes = size_t(64) << 20;
+    void postDeferred(std::function<void()> job, size_t bytes);
+    // Posts that had to wait for the helper (tests).
+    uint64_t deferredWaitCount();
+
     // Puts a pump in front of stdout and stderr, one each; when both lead to the same destination they write it
     // through one shared descriptor and lock, whole lines at a time (installPair).
     // Does nothing when PS2X_STDIO_DIRECT=1, when a descriptor has no valid destination (e.g. a detached process),

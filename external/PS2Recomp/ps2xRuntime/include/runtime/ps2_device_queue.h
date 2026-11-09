@@ -144,7 +144,7 @@ namespace ps2x::device
     // explicit render-sync drain with device work submitted since the previous
     // one, pending or already applied: DW5 050, DBZIW 027). Per second = the FPS a
     // screen shows; counts 3D frames (two syncs per frame), movie frames (one)
-    // and never more than one per field (F3 overlay, issue 014).
+    // and never more than one per field (F2 overlay, issue 014).
     uint64_t gameFrameCount() noexcept;
     // DBZIW-DEBUG (DW5 050): [vu1-async] windows printed so far (PS2X_VU1_ASYNC_TRACE), so a count kept elsewhere
     // (PS2X_GS_SYNC_TRACE) can close its windows at the same moments.
@@ -153,7 +153,7 @@ namespace ps2x::device
     // The same count without the async worker (DBZIW runs it off since its
     // issue 009, so the drain above never counts there): sceGsSyncPath(0) calls
     // this; a sync after DMA work since the previous one counts as a frame, at
-    // most one per field (DBZIW 013, the F3 overlay's FPS).
+    // most one per field (DBZIW 013, the F2 overlay's FPS).
     void noteSynchronousRenderSync(PS2Memory &mem) noexcept;
 
     // PS2X_DEVICE_PROFILE=1 (with PS2X_VU1_ASYNC_TRACE=1): device-worker time per
