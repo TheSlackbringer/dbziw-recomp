@@ -257,7 +257,9 @@ functions that never wait; a replacement may continue into another guest functio
 From `game`: `PS2X_GS_BACKEND=vulkan PS2X_HIDDEN=1 PS2X_GS_SCALE=1 PS2X_GS_SSAA=1 PULSE_SINK=dbziw_codex_tests
 PS2X_HOST_INPUT="<tick>:<KEY>:<hold>,..." PS2X_DUMP_DIR=<dir> PS2X_DUMP_EVERY=<n> PS2X_EXIT_TICK=<n> timeout <s>
 ../app/build/dbziw ./SLES_553.47 > run.log 2>&1`. Ticks are VSync fields (50/s in PAL50 mode, 59.94/s in PAL60
-mode), so the same tick is a different moment in each mode (issue 019).
+mode), so the same tick is a different moment in each mode (issue 019). Test runs pin PAL50 (`PS2X_VIDEO_MODE=50` in
+`dbztest.run_game`); the launcher starts players at 60 Hz. PAL60 routes: `dbztest.to_pal60()` (the game's own switch,
+then every PAL50 press at the same moment) and `dbztest.at_60hz()` (a run at 60 Hz from its first field).
 Keys: ENTER (Start), TAB (Select), Z (Square / Punch), V (Triangle / Kick), X or Space (Cross / Guard / Evade),
 C (Circle / Ki Blast), Q/E (L1/R1 / Transformation & Aura Burst), Left/Right Shift (L2/R2 / Capsule Activate),
 Arrows or WASD (D-pad / Left Stick). Leave ~100 ticks between menu presses.
@@ -266,7 +268,8 @@ manual play. Silent sink missing after a reboot: `pactl load-module module-null-
 Stop a game with `kill <pid>` (never `pkill -f dbziw` from a shell whose own command line contains that string).
 Routes: `dbztest.py` (`ROUTE_BOOT`, `ROUTE_MENU`, `ROUTE_BATTLE`). The boot route `120:CROSS:5,400:CROSS:5,
 800:LEFT:5,850:CROSS:5,950:CROSS:5,1100:CROSS:5,1250:CROSS:5,1400:CROSS:5` passes language select (~70–130), the
-logos and the autosave warning; no memory-card check and no 50/60 Hz selector appear (017 M4, frames every 10 ticks:
+logos and the autosave warning; no memory-card check and no visible 50/60 Hz selector appear (the switch is hidden:
+see Pitfalls, PAL50 vs PAL60) (017 M4, frames every 10 ticks:
 `800:LEFT` and `850:CROSS` land on the Dimps logo); the opening movie starts at ~1790 (020 M1). The same route reaches the title screen ("Press
 START button") at ~6750 after the movie (014 M3d). Further, PAL50: `6800:START:5,7100:CROSS:5` (New Game),
 `7300:UP:5,7400:CROSS:5` (create the save file: Yes; use a scratch card folder, `PS2X_MC_ROOT`), main menu at ~7700,
@@ -288,7 +291,9 @@ presented frames (`frame_<tick>.png`); contact sheet:
 - **Guest crash handler (`PS2X_CRASH_HANDLER=1`, `ps2_runtime.cpp`):** in-process fault report before aborting.
 
 ### Debug switches (env, all optional)
-Diagnostics/pacing: `PS2X_STALL_WATCHDOG=3` · `PS2X_CRASH_HANDLER=1` · `PS2X_STATS` (vsync/s per second) ·
+Diagnostics/pacing: `PS2X_STALL_WATCHDOG=3` · `PS2X_CRASH_HANDLER=1` · `PS2X_STATS` (`[stats] t= tick= vsync/s=` once per host second;
+works again since 019) · `PS2X_VIDEO_MODE=50|60` (019: the start-up video mode; beats `video_mode` in `dbziw.ini`;
+every test run sets 50) · `PS2X_VIDEO_MODE_DEFAULT=60` (019: the launcher's default when `dbziw.ini` has no `video_mode`) ·
 `PS2X_HUD_LOG` ([hud] fps/vsync/frameMs/maxFrameMs every 0.5 s) · `PS2X_LATE_VBLANK` (fields >3 ms late) ·
 `PS2X_VU1_ASYNC_TRACE` (device worker busy/drains per second; "explicit=N" render syncs = 2 x game FPS) ·
 `PS2X_DEVICE_PROFILE=1` with the async trace (device time split) ·
@@ -343,7 +348,8 @@ difference heatmaps. Screenshots are game-derived (scratch or `notes/evidence/` 
 
 ### Rendering bugs: record and replay one frame
 `PS2X_GS_RECORD=<file> PS2X_GS_RECORD_FROM=<tick> PS2X_GS_RECORD_TO=<tick>` records every renderer call (starts with
-a VRAM snapshot). Replay tools: `app/build/dbziw_gsrender <rec> <cpu|vulkan> <outdir> <ticks> [--fb ...]`
+a VRAM snapshot; format version 3 since 019: the presentation request carries SMODE1, version 2 recordings are
+refused). Replay tools: `app/build/dbziw_gsrender <rec> <cpu|vulkan> <outdir> <ticks> [--fb ...]`
 replays it; bisect with `--stop-at`. `dbziw_gsrec dump <rec> --from N --count M --fields` lists the draws. Vulkan
 renderer fixes are runtime patches in `vendor/parallel-gs-patches/`.
 
@@ -404,10 +410,15 @@ renderer fixes are runtime patches in `vendor/parallel-gs-patches/`.
   profile's `[[code_copies]]` compile them (014, DW5's entries + `0xfc560`). Without them every installed service
   returns `KE_ERROR`, and since the DW5 038 port a Timer 3 interrupt aborts ("Installed INTC kernel vector has no
   native function").
-- **PAL50 vs PAL60 modes:** No 50/60 Hz selector was seen on the boot route or in Options → Screen (017 M4); how
-  the PAL disc offers 60 Hz is open (019). The runtime takes the field rate
-  from the game's `SetGsCrt` (mode 3 = PAL; only modes 2/3 are recognised); the scanout guesses PAL from picture height.
-  VSync cadence, CD stream rate, movies and IOP timing must all follow the selected mode (issue 019).
+- **PAL50 vs PAL60 modes (019):** the PAL disc's 60 Hz is hidden: hold L1+L2+R1+R2 on the language screen, then Yes on
+  "Would you like to change NTSC/PAL mode?" (the game's `SetGsCrt` mode 2 at ~tick 79). A setting does the same from the
+  start: `app/src/dbziw_video_mode.cpp` gives the start-up display block `0x420300` the "Yes" mode (block `0x47d430`);
+  order `PS2X_VIDEO_MODE`, `video_mode` in `dbziw.ini`, the launcher's `PS2X_VIDEO_MODE_DEFAULT=60`, else 50. The
+  scheduler takes the field rate from `SetGsCrt` (modes 2/3; others are reported, not modelled); `SetGsCrt` also sets
+  SMODE1.CMOD and the Vulkan scanout takes the TV system from it (the picture-height guess only when CMOD is neither).
+  `[gs:setcrt]` and `[vsync:rate]` lines log every call and period change. The game scales its timing to the mode: 60 Hz
+  runs at the same speed in real time (019, `tests/speed_019.py`). CD streams: DBZIW has no paced stream to measure
+  (no `sceCdSt*` binding; IOP reads are not paced); CTest `cd_stream_rate` covers the conversion.
 - **CRI ADX audio & Sofdec SFD video:** Infinite World relies heavily on CRI middleware (`CRI_ADXI.IRX`, AFS archives,
   and SFD video streams). Data transfer from IOP to EE streaming buffers must not starve or hitch. Sofdec runs on top
   of Sony's libmpeg and libipu (native game code, unbound), which drive the IPU hardware; the runtime's IPU is
