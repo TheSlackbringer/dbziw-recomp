@@ -263,6 +263,9 @@ then every PAL50 press at the same moment) and `dbztest.at_60hz()` (a run at 60 
 Keys: ENTER (Start), TAB (Select), Z (Square / Punch), V (Triangle / Kick), X or Space (Cross / Guard / Evade),
 C (Circle / Ki Blast), Q/E (L1/R1 / Transformation & Aura Burst), Left/Right Shift (L2/R2 / Capsule Activate),
 Arrows or WASD (D-pad / Left Stick). Leave ~100 ticks between menu presses.
+Function keys (013, DW5's layout in one table, `runtime/hotkeys.h`; CTest `hotkeys` also checks README's key table):
+F1 debugger (developer builds), F2 frame-rate overlay, F3 anti-aliasing, F4 output resolution, F8 build ID and tick;
+DW5's F5/F9 (save and load state) and F10 (Discs) are not bound (016; one disc).
 A host-input script disables real keyboard polling for the whole run: never set `PS2X_HOST_INPUT`/`PS2X_INPUT` for
 manual play. Silent sink missing after a reboot: `pactl load-module module-null-sink sink_name=dbziw_codex_tests`.
 Stop a game with `kill <pid>` (never `pkill -f dbziw` from a shell whose own command line contains that string).
@@ -304,7 +307,8 @@ every test run sets 50) · `PS2X_VIDEO_MODE_DEFAULT=60` (019: the launcher's def
 accesses, counters; `[iopnative:verify] MISMATCH` lines; slow) · `PS2X_IOP_LIFT_MODULES=<names>` (only these modules
 native, comma-separated, e.g. `CRI_ADXI`) · `PS2X_IOP_LIFT_STATS=1` (`[iopnative] second native=…%` once per IOP
 second; on with the verify switch) · `PS2X_GS_ASYNC=0` (GS inline, no worker thread) ·
-`PS2X_HOST_FPS` · `PS2X_DETERMINISTIC=1` (022, tests and replays: guest time from EE cycles only: fields and idle waits,
+`PS2X_HOST_FPS=<n>` (a fixed window rate, e.g. 60, the loop before 013; default: field pacing, one window frame per
+game field) · `PS2X_DETERMINISTIC=1` (022, tests and replays: guest time from EE cycles only: fields and idle waits,
 the IOP on EE cycles / 8, GS and device workers off, one fixed host date, scripted input only, frames saved on the game's
 thread at field start; a slow PC runs the game slower than real time; normal play never sets it) ·
 `PS2X_STATE_HASH=<file>` (022: one line per field: EE cycle, field-clock jump, hashes of EE RAM, scratchpad, VU memory and
@@ -318,6 +322,13 @@ Windows test runs, which have no silent sink, make no sound; 011) · `PS2X_STDIO
 stdout/stderr written directly, as before 011, for crash hunting; lines may then tear on Windows; 011).
 Graphics: `PS2X_GS_SCALE` / `PS2X_GS_SSAA` · `PS2X_NO_WEAVE` · `PS2X_GS_SYNCREADBACK` · `PS2X_GS_TRACE=<file>` +
 `_FROM/_TO` · `PS2X_GS_RECORD=<file>` + `_FROM/_TO` · `PS2X_VRAM_DUMP=<file>` · `PS2X_XGKICK_CAPTURE=<prefix>` + `_FROM/_TO`.
+Window/presentation (013, DW5 023): `PS2X_PRESENT_STATS` (per second: window frames, new pictures, skipped fields,
+frames over 25 ms; cheap) · `PS2X_FIELD_SCANOUT=0` (the old window-time field read, A/B only) · `PS2X_WEAVE_TRACE`
+(per picture: `[upload:rows]` row profile, `[weave:out]`, `[present]`; 013's test reads them; costs ~30 ms per 4x frame,
+never for timing) + `PS2X_WEAVE_TRACE_COLS=<a>:<b>` (the columns of `[weave:out]`) · `PS2X_VBL_DRAW_TRACE` (`[field:read]`
+per field: writes into the displayed pages, display-register change, repeat) · `PS2X_LATCH_TRACE` (`[latch]` display
+registers per latched field) · `PS2X_VSYNC=1` (swap on the display's refresh; an experiment, the player setting is
+028's) · `PS2X_INPUT_TRACE=1` (`[pad-sample] field= pressed=`: the controller sample of each field).
 Sound/IOP: `PS2X_SPU2_TRACE` · `PS2X_LIBSD_TRACE` · `PS2X_AUDIO_DUMP=<wav>` (s16 stereo 48 kHz) · `PS2X_AUDIO_TRACE` ·
 `PS2X_SIFAUDIO_TRACE` · `PS2X_MPEGAUDIO_TRACE` · `PS2X_IOP_HEAP_TRACE` · `PS2X_IO_TRACE` · `PS2X_IOP_CLOCK_TRACE` ·
 `PS2X_IOP_CATCHUP_TRACE` (catch-ups > 2 ms, `[iop-catchup]`). Heavy IOP tracing starves audio streams: judge audio untraced.
@@ -325,7 +336,7 @@ Other: `PS2X_MPG_TRACE` · `PS2X_VIF1_CHAIN_TRACE` · `PS2X_RAM_DUMP_TICKS=t1,t2
 `PS2X_DUMP_FROM=<a>` / `PS2X_DUMP_TO=<b>` (with `PS2X_DUMP_EVERY`: frame dumps only for ticks in [a, b]) ·
 `PS2X_PROFILE_MARKERS=<file>` (+ `_CAPACITY`; only in the diagnostic build `app/build-diagnostics`,
 `-DDBZIW_DEVELOPER_DIAGNOSTICS=ON`, 010).
-*Planned (not in the code yet):* `PS2X_PRESENT_STATS`, `PS2X_FIELD_SCANOUT=0`, `PS2X_WEAVE_TRACE` (013) · `PS2X_STATE_RESAVE=<file>` (016) ·
+*Planned (not in the code yet):* `PS2X_STATE_RESAVE=<file>` (016) ·
 `PS2X_SETTINGS_FILE` (028) ·
 CRI/Sofdec/IPU traces (020) ·
 `PS2X_PAD_TRACE` (021).
@@ -348,8 +359,8 @@ difference heatmaps. Screenshots are game-derived (scratch or `notes/evidence/` 
 
 ### Rendering bugs: record and replay one frame
 `PS2X_GS_RECORD=<file> PS2X_GS_RECORD_FROM=<tick> PS2X_GS_RECORD_TO=<tick>` records every renderer call (starts with
-a VRAM snapshot; format version 3 since 019: the presentation request carries SMODE1, version 2 recordings are
-refused). Replay tools: `app/build/dbziw_gsrender <rec> <cpu|vulkan> <outdir> <ticks> [--fb ...]`
+a VRAM snapshot; format version 4 since 013: the presentation request carries SMODE1 (019) and the field its picture
+was drawn for (DW5 023 2K), so a replay weaves as the window did; older recordings are refused). Replay tools: `app/build/dbziw_gsrender <rec> <cpu|vulkan> <outdir> <ticks> [--fb ...]`
 replays it; bisect with `--stop-at`. `dbziw_gsrec dump <rec> --from N --count M --fields` lists the draws. Vulkan
 renderer fixes are runtime patches in `vendor/parallel-gs-patches/`.
 
@@ -444,6 +455,11 @@ renderer fixes are runtime patches in `vendor/parallel-gs-patches/`.
 - **Every VU1 program on the disc is translated** (012): `port/static_targets.py` scans `SLES_553.47` for MPG blocks (256
   programs; no census needed; the data archives hold none). DBZIW starts no VU0 microprograms, so there is no VU0 lift.
   A `[vu1lift:miss]` line means a program the scan did not find: add it with `dbziw_vu1lift --find-range`.
+- **The window shows each game field once, read at the field's end (013, DW5 023):** field pacing is the default in both
+  rates; the scanout is queued in GS order at the game's `VBlankStart`, a field with no new picture is a repeat (not
+  woven again), and the weave knows each picture's target field, so still screens and the HUD do not bob. The
+  controller and `PS2X_HOST_INPUT` are sampled once per field, at the game's first pad read, so scripted presses land on
+  their field in every window mode. Deterministic mode (022) keeps its own field-start latch on the game's thread.
 - **Never measure stutter with frame dumps on** (PNG dumps cause 40 ms hitches and can hide timing races); the
   overlay/`[hud]` VSync figure reads 48–51 by aliasing even when pacing is perfect — use late fields and game FPS.
 - **Lifted VU1 code must stay cycle-exact** with the interpreter (Q/flag/XGKICK timing is observable by the game).
