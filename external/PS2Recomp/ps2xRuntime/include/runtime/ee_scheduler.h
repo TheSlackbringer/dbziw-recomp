@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ps2_runtime.h"
+#include "runtime/presentation_pacing.h"
 
 #include <array>
 #include <atomic>
@@ -347,7 +348,16 @@ public:
     void setVSyncFlag(uint32_t flagAddress, uint32_t tickAddress);
     [[nodiscard]] uint64_t currentVSyncTick() const noexcept;
     void stepVSyncTicksForTesting(uint64_t ticks = 1) noexcept;
-    uint64_t waitForNextPresentationField(uint64_t &lastTick) const;
+    // DW5 023 (013) fix 2: the field the window shows next, one field identity (ps2x::presentation): the newest field
+    // whose end was announced (VBlankEnd), fresh when it is newer than lastShown (kNoField: none shown yet). Waits for it
+    // until the window gives up because the game is stalled (a whole field after that field's scheduled end), then
+    // returns lastShown again, not fresh, so the window keeps drawing the last picture.
+    struct PresentationField
+    {
+        uint64_t field = ps2x::presentation::kNoField;
+        bool fresh = false;
+    };
+    PresentationField waitForPresentationField(uint64_t lastShown) const;
     // DW5 009 v4.4 (015, design 1a): called at an event service (executor, outside guest code) with the token of an EE
     // request whose IOP part has ended.
     void setIopRpcCompletionHandler(std::function<void(uint64_t)> handler) { m_iopRpcCompletion = std::move(handler); }
@@ -413,6 +423,9 @@ private:
     void processDueDeadlines();
     void writeStateHash(); // DBZIW-DEBUG issue 022: PS2X_STATE_HASH
     void processEvent(const EeEvent &event);
+    // DW5 023 (013): at the end of field `field` the window's picture of it is read on the GS side, in order with the
+    // game's GS work (display registers in device order, the read in GS worker order).
+    void requestFieldScanout(uint64_t field);
     void finishEventWaiters(EeEventFlag &flag, bool interruptSafe);
     [[nodiscard]] static bool eventCondition(uint32_t current, uint32_t requested, uint32_t mode);
     static int waitObjectId(const EeWaitState &wait);
@@ -484,6 +497,11 @@ private:
     std::atomic<uint64_t> m_presentationTick{0};
     mutable std::mutex m_presentationMutex;
     mutable std::condition_variable m_presentationCv;
+    // DW5 023 (013) fix 2: when the end of field m_scheduledEndField is to be announced (its VBlankEnd); later fields
+    // follow one field period apart. Written at VBlankStart under m_presentationMutex; not known after reset/load.
+    uint64_t m_scheduledEndField = 0;
+    std::chrono::steady_clock::time_point m_scheduledEndTime{};
+    bool m_scheduledEndKnown = false;
     // DW5 009 v4.4 (015, design 1a): finishes an EE request whose IOP part has ended (RPC.cpp registers it).
     std::function<void(uint64_t)> m_iopRpcCompletion;
     std::atomic<bool> m_palVideoMode{false};

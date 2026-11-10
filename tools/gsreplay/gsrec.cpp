@@ -1,5 +1,5 @@
 // DBZIW-TEST: offline inspection and comparison of PS2X_GS_RECORD recordings
-// (canonical format v3, see ps2xRuntime/src/lib/gs/gs_record_format.h).
+// (canonical format v4, see ps2xRuntime/src/lib/gs/gs_record_format.h).
 //
 //   dbziw_gsrec stats <rec>
 //   dbziw_gsrec dump  <rec> [--from N] [--count N] [--fields]
@@ -54,7 +54,7 @@ namespace
             if (std::fread(magic, 1u, 8u, m_file) != 8u || std::memcmp(magic, kMagic, 8u) != 0)
                 throw std::runtime_error(path + ": not a GS recording in format v2 (old v1 recordings are not comparable)");
             if (std::fread(header, sizeof(header), 1u, m_file) != 1u || header[0] != kVersion)
-                throw std::runtime_error(path + ": unsupported GS recording version (this build reads version 3; DBZIW 019 added SMODE1)");
+                throw std::runtime_error(path + ": unsupported GS recording version (this build reads version 4; DBZIW 019 added SMODE1, 013 the target field)");
         }
         ~RecFile()
         {

@@ -1,3 +1,4 @@
+#include "runtime/hotkeys.h"
 #include "ps2_debug_panel.h"
 #include "ps2_runtime.h"
 #include "ps2_runtime_macros.h"
@@ -2216,7 +2217,7 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
         return;
     }
 
-    if (m_debuggerEnabled && IsKeyPressed(KEY_F1))
+    if (m_debuggerEnabled && IsKeyPressed(ps2x::hotkeys::key(ps2x::hotkeys::Action::Debugger)))
     {
         toggleVisible();
     }

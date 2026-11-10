@@ -1,5 +1,6 @@
 #include "Common.h"
 #include "Pad.h"
+#include "runtime/ee_scheduler.h"
 
 namespace ps2_stubs
 {
@@ -299,7 +300,8 @@ namespace ps2_stubs
             if (!useOverride)
             {
                 uint8_t backendData[32]{};
-                if (runtime && runtime->padBackend().readState(port, slot, backendData, sizeof(backendData)))
+                if (runtime && runtime->padBackend().readState(port, slot, backendData, sizeof(backendData),
+                                                               runtime->eeScheduler().currentVSyncTick()))
                 {
                     state.buttons = static_cast<uint16_t>(backendData[2] | (backendData[3] << 8));
                     state.rx = backendData[4];

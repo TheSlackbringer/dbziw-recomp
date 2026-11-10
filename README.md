@@ -77,10 +77,10 @@ Gamepads work too.
 | Key | Description |
 | --- | --- |
 | **F1** | Runtime debugger, for developers. |
-| **F2** | Show or hide the build ID and game tick (for bug reports). |
-| **F3** | Show or hide the frame rate. |
+| **F2** | Show or hide the frame rate. |
+| **F3** | Cycle anti-aliasing (1× → 2× → 4× → 8× → 16×). |
 | **F4** | Cycle the resolution (1× → 2× → 4×). |
-| **F5** | Cycle anti-aliasing (1× → 2× → 4× → 8× → 16×). |
+| **F8** | Show or hide the build ID and game tick (for bug reports). |
 
 The resolution and anti-aliasing choices are remembered in `dbziw.ini`, in your settings folder.
 

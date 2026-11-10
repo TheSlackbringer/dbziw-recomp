@@ -1,8 +1,8 @@
 #ifndef PS2X_GS_RECORD_FORMAT_H
 #define PS2X_GS_RECORD_FORMAT_H
 
-// Canonical on-disk format of PS2X_GS_RECORD backend recordings (version 3; DBZIW 019: the presentation
-// request carries SMODE1, so version 2 recordings are not read).
+// Canonical on-disk format of PS2X_GS_RECORD backend recordings (version 4; DBZIW 019: the presentation
+// request carries SMODE1; 013: and the field its picture was drawn for (DW5 023 2K); older recordings are not read).
 // DBZIW-TEST: shared by the runtime recorder (gs_record.cpp) and the offline
 // tools (tools/gsreplay: dbziw_gsrec diff/dump, dbziw_vif1_replay).
 //
@@ -27,7 +27,7 @@
 namespace GSRecord
 {
     inline constexpr char kMagic[8] = {'P', 'S', '2', 'X', 'G', 'S', 'R', '2'};
-    inline constexpr uint32_t kVersion = 3u;
+    inline constexpr uint32_t kVersion = 4u;
 
     enum class Op : uint8_t
     {
@@ -139,7 +139,7 @@ namespace GSRecord
         v("dispfb2", x.dispfb2); v("display2", x.display2); v("bgcolor", x.bgcolor); v("vsyncTick", x.vsyncTick);
         v.object("contextFrame0", x.contextFrames[0]); v.object("contextFrame1", x.contextFrames[1]);
         v.object("preferredSource", x.preferredSource); v("preferredDestFbp", x.preferredDestFbp);
-        v("hasPreferredSource", x.hasPreferredSource);
+        v("hasPreferredSource", x.hasPreferredSource); v("fieldTarget", x.fieldTarget);
     }
 
     // ---- writer ----------------------------------------------------------

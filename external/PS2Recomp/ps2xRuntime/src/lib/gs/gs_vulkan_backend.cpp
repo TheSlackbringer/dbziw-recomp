@@ -72,7 +72,7 @@ struct GSVulkanBackend::Impl
     uint64_t gpuPresentations = 0, convertedPresentations = 0;
     std::atomic<uint32_t> currentScale{1};
     std::atomic<uint32_t> aaSamples{1};
-    // The player's anti-aliasing choice (F5): samples per output pixel, on top
+    // The player's anti-aliasing choice (F3 since 013): samples per output pixel, on top
     // of the samples the output scale needs to build the larger image.
     uint32_t requestedSamples = 1;
     uint32_t maxAASamples() const
@@ -399,7 +399,7 @@ bool GSVulkanBackend::PresentInto(const GSPresentationRequest &request, Presenta
     bool gpuScanout = false;
     bool updated = false;
     // The previous presentation's copied reads release their buffers here, under the device lock.
-    p.scanoutState.retired.clear();
+    p.scanoutState.recycleRetired();
     try
     {
         presentVulkanGs(p.gs, p.device, p.scanoutState, request,
@@ -437,6 +437,56 @@ bool GSVulkanBackend::PresentInto(const GSPresentationRequest &request, Presenta
         PresentationFrame discarded;
         finishVulkanGsPresentInto(p.device, p.scanoutState, reads, &p.fieldWeaver, discarded);
     }
+    lock.lock();
+    p.scanoutState.retired = std::move(reads);
+    return updated;
+}
+bool GSVulkanBackend::SubmitFieldScanout(const GSPresentationRequest &request)
+{
+    // GS side, in order with the game's GS work (DW5 023, 013): reads the field the PS2 has just finished showing.
+    auto lock = m_impl->access(); auto &p = *m_impl;
+    try
+    {
+        presentVulkanGs(p.gs, p.device, p.scanoutState, request,
+                        p.currentScale.load(std::memory_order_relaxed), p.dirty);
+    }
+    catch (const std::exception &error)
+    {
+        // Display modes outside the GPU scanout bridge: the window reads them itself (PresentInto, CPU conversion,
+        // which also reports other errors as before). Never thrown across the GS worker.
+        static bool s_logged = false;
+        if (!s_logged)
+            std::fprintf(stderr, "[gs:vulkan] field scanout not supported, window reads instead: %s\n", error.what());
+        s_logged = true;
+        return false;
+    }
+    p.dirty = false;
+    ++p.gpuPresentations;
+    return true;
+}
+bool GSVulkanBackend::CollectFieldScanouts(PresentationFrame &out, uint64_t waitForField, uint64_t maxField)
+{
+    auto lock = m_impl->access(); auto &p = *m_impl;
+    p.scanoutState.recycleRetired();
+    if (waitForField != UINT64_MAX)
+    {
+        // The window waits for the field it is about to show, without the device lock (the GS worker keeps drawing);
+        // bounded by one PAL field like the field wait itself.
+        Vulkan::Fence fence = pendingFieldReadFence(p.scanoutState, waitForField);
+        if (fence)
+        {
+            lock.unlock();
+            fence->wait_timeout(20'000'000ull);
+            lock.lock();
+            fence.reset();
+        }
+    }
+    collectVulkanGsReads(p.device, p.scanoutState, maxField);
+    // Copy without the device lock, as PresentInto does.
+    std::vector<VulkanGsScanoutState::StagedRead> reads = std::move(p.scanoutState.staged);
+    p.scanoutState.staged.clear();
+    lock.unlock();
+    const bool updated = finishVulkanGsPresentInto(p.device, p.scanoutState, reads, &p.fieldWeaver, out);
     lock.lock();
     p.scanoutState.retired = std::move(reads);
     return updated;

@@ -267,6 +267,13 @@ dbziw_runtime_test(rom_profile src/dbziw_rom_profile.cpp) # DBZIW 037
 dbziw_runtime_test(keyboard_stick) # DBZIW 038
 dbziw_runtime_test(settings_file) # DBZIW 007
 dbziw_runtime_test(crt_mode_switch) # DBZIW 019
+dbziw_runtime_test(host_input_field_sample) # DBZIW 013 (DW5 023 5c): one controller sample per field
+# DBZIW 013 (DW5 eaa68f3, 08d30e8): the function keys come from one table; README.md lists exactly those keys.
+add_executable(dbziw_hotkeys_test tests/hotkeys_test.cpp)
+target_link_libraries(dbziw_hotkeys_test PRIVATE ps2_runtime)
+target_compile_definitions(dbziw_hotkeys_test PRIVATE DBZIW_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/..")
+set_target_properties(dbziw_hotkeys_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
+add_test(NAME hotkeys COMMAND dbziw_hotkeys_test)
 set_tests_properties(keyboard_stick PROPERTIES ENVIRONMENT "PS2X_HOST_INPUT=100:W:1,200:S:1,300:A:1,400:D:1,500:W:1,500:A:1,600:W:1,600:S:1,700:A:1,700:D:1,800:UP:1,900:DOWN:1,1000:LEFT:1,1100:RIGHT:1,1200:W:1,1200:DOWN:1")
 # DBZIW 011: DW5 025's guards for the runtime speed fixes (A, B, C2, C3a, C3b, D) and DW5 023 7T.
 foreach(name dma_chain_snapshot vu1_xgkick_tail gif_arbiter_order)
@@ -279,7 +286,7 @@ add_executable(dbziw_iop_ascii_compare_test tests/iop_ascii_compare_test.cpp)
 target_link_libraries(dbziw_iop_ascii_compare_test PRIVATE ps2_iop)
 set_target_properties(dbziw_iop_ascii_compare_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
 add_test(NAME iop_ascii_compare COMMAND dbziw_iop_ascii_compare_test)
-foreach(name stdio_pump log_lines_whole stdio_pump_exit) # the pump on its own, as in DW5; exit paths: DBZIW 011
+foreach(name stdio_pump log_lines_whole stdio_pump_exit deferred_log) # the pump on its own, as in DW5; exit paths: DBZIW 011; deferred debug lines: 013
     add_executable(dbziw_${name}_test tests/${name}_test.cpp "${PS2RECOMP_DIR}/ps2xRuntime/src/lib/ps2_stdio_pump.cpp")
     target_include_directories(dbziw_${name}_test PRIVATE "${PS2RECOMP_DIR}/ps2xRuntime/include")
     set_target_properties(dbziw_${name}_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
@@ -287,6 +294,13 @@ foreach(name stdio_pump log_lines_whole stdio_pump_exit) # the pump on its own, 
 endforeach()
 set_tests_properties(stdio_pump PROPERTIES TIMEOUT 20)
 set_tests_properties(log_lines_whole PROPERTIES TIMEOUT 30)
+set_tests_properties(deferred_log PROPERTIES TIMEOUT 20)
+# DBZIW 013 (DW5 023 fix 2): the window shows each field once; it gives up waiting only when the game stalls.
+add_executable(dbziw_presentation_wait_test tests/presentation_wait_test.cpp)
+target_include_directories(dbziw_presentation_wait_test PRIVATE "${PS2RECOMP_DIR}/ps2xRuntime/include")
+set_target_properties(dbziw_presentation_wait_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
+add_test(NAME presentation_wait COMMAND dbziw_presentation_wait_test)
+set_tests_properties(presentation_wait PROPERTIES TIMEOUT 20)
 foreach(name vu0_macro vu1_fmac_fast ee_rounding) # bit-exact float results
     dbziw_runtime_test(${name})
     target_compile_options(dbziw_${name}_test PRIVATE ${DBZIW_STRICT_FP_FLAGS})

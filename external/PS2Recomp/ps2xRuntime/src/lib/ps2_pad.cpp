@@ -20,6 +20,7 @@
 namespace ps2x_dev
 {
     extern std::atomic<uint32_t> g_padPressedMask;
+    uint32_t scriptedMaskAt(uint64_t tick); // DBZIW 013: the dev harness's script for one field (ps2_runtime.cpp)
 }
 
 namespace
@@ -53,7 +54,17 @@ namespace
     State gState;
     std::mutex gMutex;
 
-    // Only the window thread touches the following device and edge state.
+    // One controller sample per guest field (DW5 023 5c, 013): the PS2's controller driver reads the pad once per field
+    // and the game reads that result, so every pad read within a field returns the sample taken at its first read.
+    std::mutex gSampleMutex;
+    bool gSampleValid = false;
+    uint64_t gSampleField = 0;
+    uint16_t gSamplePressed = 0;
+    std::array<uint8_t, 4> gSampleSticks{128, 128, 128, 128};
+    uint32_t gSampleScripted = 0u; // DBZIW 013: the dev harness's mask of the sampled field (LSTICK_* bits included)
+
+    // Only the thread that reads the inputs touches the following device and edge state: the window thread, or with
+    // a host-input script the game's pad reads (under gSampleMutex).
     bool gPreviousFocus = false, gPreviousGameplay = false;
     bool gResumeCapture = false, gCursorDisabled = false;
     std::array<bool, 3> gPreviousMouse{}, gSwallowedMouse{};
@@ -214,7 +225,8 @@ namespace ps2_host_input
         blit(0, white);
     }
 
-    void poll(uint64_t vsyncTick)
+    // One reading of the devices, or of the script for field `vsyncTick`, into gState.
+    static void readInputs(uint64_t vsyncTick)
     {
         initScript();
         if (!IsWindowReady() && !gScripted) return;
@@ -360,8 +372,7 @@ namespace ps2_host_input
             if (captured) DisableCursor(); else EnableCursor();
             gCursorDisabled = captured;
         }
-        Vector2 delta = GetMouseDelta();
-        if (gScripted) delta = {0.0f, 0.0f};
+        Vector2 delta = gScripted ? Vector2{0.0f, 0.0f} : GetMouseDelta();
         for (Event &event : gEvents)
         {
             if (event.name == "MOUSE" && !event.consumed && vsyncTick >= event.tick)
@@ -374,8 +385,9 @@ namespace ps2_host_input
 
         // Brief taps must survive until a slow guest frame samples its pad.
         // Movement keys are never extended, so releasing W/A/S/D stops promptly.
+        // A script's presses last exactly the fields it names (DW5 023 5c, 013).
         const uint16_t rawPressed = pressed;
-        for (unsigned bit = 0; bit < 16; ++bit)
+        for (unsigned bit = 0; bit < 16 && !gScripted; ++bit)
         {
             const uint16_t mask = static_cast<uint16_t>(1u << bit);
             if ((kTapButtons & mask) && (rawPressed & mask) && !(gPreviousPressed & mask))
@@ -416,9 +428,17 @@ namespace ps2_host_input
         gPreviousMouse = mouse;
         gPreviousPressed = rawPressed;
     }
+
+    void poll(uint64_t vsyncTick)
+    {
+        initScript();
+        // A script is evaluated by the game's pad reads, for the field they happen in (PSPadBackend::readState).
+        if (gScripted) return;
+        readInputs(vsyncTick);
+    }
 }
 
-bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t size)
+bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t size, uint64_t field)
 {
     if (!data || size < 32) return false;
     std::memset(data, 0, 32);
@@ -432,14 +452,43 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
         // (live keyboard and gamepad input are not used either).
         std::memset(data + 4, 128, 4);
     }
+    uint32_t scripted = 0u;
+    if (ps2x::deterministicMode())
+        scripted = ps2x_dev::g_padPressedMask.load(std::memory_order_relaxed);
     else
     {
-        std::lock_guard<std::mutex> lock(gMutex);
-        pressed = gState.pressed;
-        std::memcpy(data + 4, gState.sticks.data(), gState.sticks.size());
+        // DBZIW 013 (DW5 023 5c): one controller sample per guest field, taken at the game's first pad read in it; a
+        // script (the host-key fixture and the dev harness's pad presses) is evaluated for that field, so presses land
+        // on their scripted field whatever the window loop does.
+        std::lock_guard<std::mutex> sampleLock(gSampleMutex);
+        if (!gSampleValid || field != gSampleField)
+        {
+            initScript();
+            if (gScripted)
+                ps2_host_input::readInputs(field);
+            const uint16_t previous = gSamplePressed;
+            {
+                std::lock_guard<std::mutex> lock(gMutex);
+                gSamplePressed = gState.pressed;
+                gSampleSticks = gState.sticks;
+            }
+            // the script for this field, plus any live change of the dev mask (published only in the deterministic
+            // mode or by a test) since the previous field
+            gSampleScripted = ps2x_dev::scriptedMaskAt(field) | ps2x_dev::g_padPressedMask.load(std::memory_order_relaxed);
+            gSamplePressed |= static_cast<uint16_t>(gSampleScripted);
+            // DBZIW-DEBUG (DW5 023 5c, 013): the field in which the game's sample changes.
+            if (traceEnabled() && (!gSampleValid || gSamplePressed != previous))
+                std::fprintf(stderr, "[pad-sample] field=%llu pressed=%04x\n", static_cast<unsigned long long>(field),
+                             gSamplePressed);
+            gSampleField = field;
+            gSampleValid = true;
+        }
+        pressed = gSamplePressed;
+        scripted = gSampleScripted;
+        std::memcpy(data + 4, gSampleSticks.data(), gSampleSticks.size());
     }
-    const uint32_t scripted = ps2x_dev::g_padPressedMask.load(std::memory_order_relaxed);
-    pressed |= static_cast<uint16_t>(scripted);
+    if (ps2x::deterministicMode())
+        pressed |= static_cast<uint16_t>(scripted);
     // DBZIW-DEBUG (issue 020): scripted left-stick directions (LSTICK_*), bytes 6/7 = LX/LY, 0x00 left/up
     if (scripted & 0x40000u) data[6] = 0x00u;
     else if (scripted & 0x80000u) data[6] = 0xFFu;

@@ -2,6 +2,9 @@
 #define PS2_GS_FRONTEND_H
 
 #include <array>
+#include <atomic>
+#include <bitset>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -131,7 +134,16 @@ public:
     bool isDebugHistoryPaused() const;
     void setDebugHistoryPaused(bool paused);
     bool getPreferredDisplaySource(GSFrameReg &outSource, uint32_t &outDestFbp) const;
-    void latchHostPresentationFrame();
+    // DW5 023 (013): end-of-field scanout. At the end of each field (EE VBlankStart) the runtime captures the display
+    // registers in the order of the game's register writes (captureFieldScanoutRequest, device order) and hands
+    // them to the GS side behind the game's GS work (submitFieldScanout, GS worker order), which starts reading the
+    // field. The window then only collects finished field reads (latchHostPresentationFrame).
+    GSPresentationRequest captureFieldScanoutRequest(uint64_t fieldTick) const;
+    void submitFieldScanout(const GSPresentationRequest &captured);
+    bool fieldScanoutsActive() const { return m_fieldScanouts.load(std::memory_order_acquire); }
+    // waitForField: the field the window is about to show (field pacing), UINT64_MAX = take what is finished.
+    // maxField (DW5 023 (013) fix 2): reads of later fields stay for their own frame (UINT64_MAX = no limit).
+    void latchHostPresentationFrame(uint64_t waitForField = UINT64_MAX, uint64_t maxField = UINT64_MAX);
     uint64_t hostPresentationGeneration() const;
     bool copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
                                           uint32_t &outWidth,
@@ -259,6 +271,46 @@ private:
     bool m_hostPresentationUsedPreferred = false;
     bool m_hasHostPresentationFrame = false;
     uint64_t m_hostPresentationGeneration = 0;
+    // DW5 023 (013): field scanouts run on the GS side (false: the window reads at host time, e.g. the CPU renderer).
+    std::atomic<bool> m_fieldScanouts{false};
+    std::mutex m_fieldScanoutMutex;
+    std::condition_variable m_fieldScanoutCv;
+    uint64_t m_lastSubmittedField = 0;
+    bool m_hasSubmittedField = false;
+    // DW5 023 (013) step 2R: a field read is new only if, since the previous read, a GS write touched the displayed
+    // buffer or the display registers changed; otherwise it is a repeat and the window keeps the previous picture.
+    // GS side, in stream order (under m_stateMutex).
+    struct DisplayRegs
+    {
+        uint64_t pmode = 0, smode2 = 0, dispfb1 = 0, display1 = 0, dispfb2 = 0, display2 = 0, bgcolor = 0;
+        bool operator==(const DisplayRegs &o) const
+        {
+            return pmode == o.pmode && smode2 == o.smode2 && dispfb1 == o.dispfb1 && display1 == o.display1 &&
+                   dispfb2 == o.dispfb2 && display2 == o.display2 && bgcolor == o.bgcolor;
+        }
+    };
+    void noteDisplayWriteUnlocked(uint32_t basePage, uint32_t fbw, uint8_t psm, uint32_t x0, uint32_t y0,
+                                  uint32_t x1, uint32_t y1);
+    void noteDrawWriteUnlocked(const GSContext &context, bool textured = false);
+    const std::bitset<512> &displayPagesUnlocked();
+    std::bitset<512> m_displayPages;
+    DisplayRegs m_displayPagesRegs{};
+    bool m_displayPagesValid = false;
+    uint64_t m_displayPagesGeneration = 0;
+    struct DrawOverlap
+    {
+        uint64_t frameKey = ~0ull, scissorKey = ~0ull, displayGeneration = ~0ull;
+        bool overlaps = false;
+    } m_drawOverlap;
+    uint64_t m_displayWritesSinceRead = 0;
+    // DW5 023 (013) step 2K, per frame buffer (FBP): the field its picture was drawn for — 1 + the half-line bit of
+    // XYOFFSET.ofy of the draws into it (1 even, 2 odd), carried along by a draw textured from another buffer's base
+    // (a copy); 0 = not known (never drawn, or written by a transfer).
+    std::array<uint8_t, 512> m_pictureTarget{};
+    DisplayRegs m_lastFieldReadRegs{};
+    bool m_hasLastFieldRead = false;
+    // Output scale/AA change, reset or a loaded save state: the next field is read even without a GS write.
+    std::atomic<bool> m_forceFieldRead{true};
     uint64_t m_nativeImageUploadCount = 0;
     uint64_t m_nativePackedGIFPacketCount = 0;
 

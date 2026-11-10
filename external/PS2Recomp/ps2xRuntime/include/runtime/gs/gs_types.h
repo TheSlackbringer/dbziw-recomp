@@ -289,6 +289,8 @@ struct GSPresentationRequest
     GSFrameReg preferredSource{};
     uint32_t preferredDestFbp = 0;
     bool hasPreferredSource = false;
+    // DW5 023 (013) step 2K: the field the displayed picture was drawn for (0 even, 1 odd), -1 if not known.
+    int8_t fieldTarget = -1;
 };
 
 struct PresentationFrame
