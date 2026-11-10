@@ -1,3 +1,4 @@
+#include "runtime/ps2_spin_wait.h"
 #include "runtime/ps2_deterministic.h"
 #include "runtime/gs/ps2_gif_arbiter.h"
 #include "runtime/ps2_profile_markers.h"
@@ -92,8 +93,18 @@ void GifArbiter::workerLoop()
             pkt.data = {};
             m_workerBusy = false;
             if (m_pending.empty())
+            {
                 m_idleCv.notify_all();
-            m_workCv.wait(lock, [this] { return m_stopWorker || !m_pending.empty(); });
+                // DBZIW 039 stage 1: the next hand-over usually follows within microseconds; spin first so the
+                // device worker need not wake this thread with a system call.
+                const uint64_t seen = m_handovers.load(std::memory_order_relaxed);
+                lock.unlock();
+                ps2x::spinUntil([&] { return m_handovers.load(std::memory_order_acquire) != seen; });
+                lock.lock();
+                m_workerSleeping = true;
+                m_workCv.wait(lock, [this] { return m_stopWorker || !m_pending.empty(); });
+                m_workerSleeping = false;
+            }
             if (m_pending.empty())
                 return;
             pkt = std::move(m_pending.front());
@@ -136,10 +147,12 @@ void GifArbiter::flushOutbox()
     bool wake = false;
     {
         std::lock_guard<std::mutex> lock(m_workerMutex);
-        // A busy worker re-checks the queue before it waits, so only an idle one needs a wake-up.
-        wake = !m_workerBusy && m_pending.empty();
+        // A worker that is awake (busy, or spinning before it sleeps: DBZIW 039 stage 1) re-checks the queue
+        // before it waits, so only a sleeping one needs a wake-up.
+        wake = m_workerSleeping;
         for (auto &pkt : m_outbox)
             m_pending.push_back(std::move(pkt));
+        m_handovers.fetch_add(1u, std::memory_order_release);
         if (kGifStats) // DBZIW-DEBUG (DW5 025; DBZIW 011)
             m_stats.pendingMax = std::max(m_stats.pendingMax, m_pending.size());
         if (m_spare.empty())

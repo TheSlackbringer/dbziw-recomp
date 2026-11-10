@@ -1,6 +1,7 @@
 #ifndef PS2_GIF_ARBITER_H
 #define PS2_GIF_ARBITER_H
 
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -86,6 +87,8 @@ private:
     std::condition_variable m_idleCv;
     std::deque<GifArbiterPacket> m_pending;
     bool m_workerBusy = false;
+    bool m_workerSleeping = false;           // m_workerMutex: the worker waits on m_workCv (DBZIW 039 stage 1)
+    std::atomic<uint64_t> m_handovers{0};    // hand-overs so far; the worker spins on it before sleeping (039)
     bool m_stopWorker = false;
     bool m_async = false;
 

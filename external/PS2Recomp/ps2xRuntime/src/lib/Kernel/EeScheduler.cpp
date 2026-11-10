@@ -2086,6 +2086,28 @@ void EeScheduler::applyPendingPreemption()
 void EeScheduler::processPendingEvents()
 {
     assertExecutor();
+    // DBZIW 039 (v3 stage 1): the scheduler loop comes here ~10,000 times per 60 Hz field (039's profile: two clock
+    // reads and three locks each, ~5 % of the game thread). Most passes find nothing due: no posted event or held
+    // interrupt (m_checkpointPending), no timer interrupt, no deadline due by cycle, and (normal mode) no field due by
+    // the wall clock. Then the full path below would change nothing but the preemption step, so only that runs.
+    // Deterministic mode (022) reads no clock here: its fields are due by cycle only.
+    if (m_pendingEeTimerInterrupts == 0u && !m_checkpointPending.load(std::memory_order_acquire))
+    {
+        const uint64_t nextEventCycle = m_nextDeadlineCycle.load(std::memory_order_acquire);
+        if (nextEventCycle == 0u || m_eeCycle < nextEventCycle)
+        {
+            static const bool s_lateVblankTrace = [] { const char *v = std::getenv("PS2X_LATE_VBLANK"); return v && *v == '1'; }();
+            const int64_t fieldDeadline = g_nextFieldHostDeadlineNs.load(std::memory_order_acquire);
+            if (!s_lateVblankTrace && // DBZIW-DEBUG: the trace's serviceGap times every pass, as before
+                (ps2x::deterministicMode() || fieldDeadline == 0 ||
+                 steadyNs(std::chrono::steady_clock::now()) < fieldDeadline))
+            {
+                markStallStep(StallStep::Preemption); // DBZIW-DEBUG (issue 020)
+                applyPendingPreemption();
+                return;
+            }
+        }
+    }
     markStallStep(StallStep::Deadlines); // DBZIW-DEBUG (issue 020)
     processDueDeadlines();
     const uint32_t timerInterrupts = m_pendingEeTimerInterrupts;

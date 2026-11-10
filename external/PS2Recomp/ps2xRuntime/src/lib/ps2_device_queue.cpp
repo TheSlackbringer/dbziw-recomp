@@ -3,6 +3,7 @@
 
 #include "runtime/ps2_memory.h"
 #include "runtime/ps2_profile_markers.h"
+#include "runtime/ps2_spin_wait.h"
 #include "ThreadNaming.h"
 
 #include <array>
@@ -305,6 +306,7 @@ namespace ps2x::device
                 const bool hasVif1 = command->transfer.hadVif1;
                 const uint16_t kind = static_cast<uint16_t>(command->kind);
                 uint64_t submittedSeq = 0u;
+                bool wakeWorker = false;
                 {
                     std::lock_guard<std::mutex> lock(mutex);
                     const uint64_t seq = submitted.load(std::memory_order_relaxed) + 1u;
@@ -316,9 +318,12 @@ namespace ps2x::device
                     queue.push_back(std::move(command));
                     submitted.store(seq, std::memory_order_release);
                     submittedSeq = seq;
+                    // DBZIW 039 stage 1: a worker that is awake (busy or spinning) sees the new job by itself.
+                    wakeWorker = workerSleeping;
                 }
                 ps2prof::record(ps2prof::Event::JobSubmit, submittedSeq, kind); // DBZIW-DEBUG issue 010
-                workCv.notify_one();
+                if (wakeWorker)
+                    workCv.notify_one();
                 maybeReportTrace();
             }
 
@@ -375,10 +380,15 @@ namespace ps2x::device
                         blocked = true;
                         ps2prof::record(ps2prof::Event::DeviceWaitStart, target, static_cast<uint16_t>(reason)); // DBZIW-DEBUG
                         const auto waitStart = Clock::now();
+                        // DBZIW 039 stage 1: most waits end within microseconds; spin first so the worker need not
+                        // wake this thread with a system call.
+                        if (!ps2x::spinUntil([&] { return completed.load(std::memory_order_acquire) >= target; }))
                         {
                             std::unique_lock<std::mutex> lock(mutex);
+                            ++doneSleepers;
                             doneCv.wait(lock, [&]
                                         { return completed.load(std::memory_order_acquire) >= target; });
+                            --doneSleepers;
                         }
                         waitNs = nsSince(waitStart);
                         ps2prof::record(ps2prof::Event::DeviceWaitEnd, target, static_cast<uint16_t>(reason)); // DBZIW-DEBUG
@@ -451,9 +461,11 @@ namespace ps2x::device
                 if (!cfg.async || t_executingDepth != 0)
                     return;
                 std::unique_lock<std::mutex> lock(mutex);
+                ++doneSleepers; // DBZIW 039 stage 1: the worker notifies doneCv only when someone waits on it
                 doneCv.wait_for(lock, timeout, [&]
                                 { return completed.load(std::memory_order_acquire) >=
                                          submitted.load(std::memory_order_relaxed); });
+                --doneSleepers;
             }
 
             void dropPending()
@@ -727,8 +739,18 @@ namespace ps2x::device
                 std::unique_lock<std::mutex> lock(mutex);
                 while (true)
                 {
-                    workCv.wait(lock, [&]
-                                { return stop || nextExec <= submitted.load(std::memory_order_relaxed); });
+                    if (!stop && nextExec > submitted.load(std::memory_order_relaxed))
+                    {
+                        // DBZIW 039 stage 1: the next job usually follows within microseconds; spin first so the
+                        // game thread need not wake this one with a system call.
+                        lock.unlock();
+                        ps2x::spinUntil([&] { return nextExec <= submitted.load(std::memory_order_acquire); });
+                        lock.lock();
+                        workerSleeping = true;
+                        workCv.wait(lock, [&]
+                                    { return stop || nextExec <= submitted.load(std::memory_order_relaxed); });
+                        workerSleeping = false;
+                    }
                     if (nextExec > submitted.load(std::memory_order_relaxed))
                     {
                         if (stop)
@@ -802,7 +824,8 @@ namespace ps2x::device
                     }
                     completed.store(command->seq, std::memory_order_release);
                     ++nextExec;
-                    doneCv.notify_all();
+                    if (doneSleepers > 0) // DBZIW 039 stage 1: a spinning drainer sees completed by itself
+                        doneCv.notify_all();
                     if (cfg.workerIdle && nextExec > submitted.load(std::memory_order_relaxed))
                     {
                         // Wake scheduler waiters after publication; never call out
@@ -887,6 +910,8 @@ namespace ps2x::device
             std::deque<std::unique_ptr<Command>> queue; // submitted, not yet applied (mutex)
             uint64_t nextExec = 1u;                      // worker (mutex)
             bool stop = false;                           // mutex
+            bool workerSleeping = false;                 // mutex: the worker waits on workCv (039 stage 1)
+            int doneSleepers = 0;                        // mutex: threads waiting on doneCv (039 stage 1)
             std::thread worker;
             bool workerStarted = false;
 
