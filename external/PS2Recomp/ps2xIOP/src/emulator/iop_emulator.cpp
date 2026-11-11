@@ -1422,7 +1422,7 @@ namespace ps2x::iop::detail
             }
         }
 
-        void runHostClock(uint64_t nowNs) noexcept
+        uint64_t runHostClock(uint64_t nowNs, uint64_t maxCycles = std::numeric_limits<uint64_t>::max()) noexcept
         {
             if (!hostClockEpochNs || nowNs < hostClockLastNs)
             {
@@ -1442,7 +1442,8 @@ namespace ps2x::iop::detail
                                             ? maximum : wholeSeconds * kIopClockHz + fraction;
             const uint64_t target = clockCycles > maximum - hostClockBaseCycles
                                         ? maximum : hostClockBaseCycles + clockCycles;
-            const uint64_t deficit = target > totalCycles ? target - totalCycles : 0u;
+            const uint64_t behind = target > totalCycles ? target - totalCycles : 0u;
+            const uint64_t deficit = std::min(behind, maxCycles); // DBZIW 039: the IOP thread runs it in slices
             if (deficit && catchupTrace) // DBZIW-DEBUG (issue 003)
             {
                 catchupThreadCycles.clear();
@@ -1483,6 +1484,23 @@ namespace ps2x::iop::detail
                              static_cast<unsigned long long>(deficit));
                 hostClockLastTraceNs = nowNs;
             }
+            return behind - deficit;
+        }
+
+        // DBZIW 039 (v3 stage 3): IOP cycles until the next event the IOP has scheduled, as the idle step of runCycles
+        // finds it (every source counted, whatever the interrupt mask: waking early only costs a look).
+        uint64_t cyclesUntilNextEvent() const noexcept
+        {
+            constexpr uint64_t kNone = std::numeric_limits<uint64_t>::max();
+            uint64_t nextWake = kernel.nextWakeCycle(kNone);
+            for (const auto &[irq, completionCycle] : pendingDmaInterrupts)
+                nextWake = std::min(nextWake, completionCycle);
+            if (!pendingGuestCallbacks.empty())
+                nextWake = std::min(nextWake, pendingGuestCallbacks.begin()->first);
+            nextWake = timrman.nextEventCycle(nextWake);
+            if (nextWake == kNone)
+                return kNone;
+            return nextWake > totalCycles ? nextWake - totalCycles : 0u;
         }
 
         ModuleLoadResult loadImage(std::string path, std::span<const uint8_t> image, const void *arguments, uint32_t argumentSize)
@@ -1712,6 +1730,21 @@ namespace ps2x::iop::detail
     {
         if (const auto now = m_impl->host.monotonicNanoseconds())
             m_impl->runHostClock(*now);
+    }
+
+    uint64_t IopEmulator::runToHostClockStep(uint64_t maxIopCycles) noexcept
+    {
+        if (const auto now = m_impl->host.monotonicNanoseconds())
+            return m_impl->runHostClock(*now, maxIopCycles);
+        return 0u;
+    }
+
+    uint64_t IopEmulator::nanosecondsUntilNextEvent() const noexcept
+    {
+        const uint64_t cycles = m_impl->cyclesUntilNextEvent();
+        if (cycles >= std::numeric_limits<uint64_t>::max() / kNanosecondsPerSecond)
+            return std::numeric_limits<uint64_t>::max();
+        return cycles * kNanosecondsPerSecond / kIopClockHz;
     }
 
     bool IopEmulator::hasRpcServer(uint32_t sid) const noexcept

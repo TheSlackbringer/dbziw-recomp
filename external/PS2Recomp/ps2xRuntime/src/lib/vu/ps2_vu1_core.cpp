@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <limits>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 #include <ps2_log.h>
@@ -2110,6 +2111,311 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
             dump(".data", vuData, dataSize);
             dump(".state", &m_state, sizeof(m_state));
         }
+    }
+    // DBZIW-DEBUG issue 039 (option B step 1, per-register census): PS2X_VU1_DEPS_REGS=<file>. For every VU1 run in
+    // fields PS2X_VU1_DEPS_FROM..PS2X_VU1_DEPS_TO: which register groups it reads (a shadow copy with junk in only that
+    // group gives other results: written registers and memory, GIF packets, end pc, cycles), and which earlier run
+    // last changed each of them. Groups 54-58 are VU memory last written by a VU run (and not rewritten by VIF since),
+    // by the writer's distance: 1, 2-3, 4-10, 11-100, >100 runs back (writer = the latest in that bucket).
+    // Writers are tracked for every run (from a clean shadow). Line: run tick pc cycles g:writer,... Slow; offline only.
+    static const char *s_regsPath = std::getenv("PS2X_VU1_DEPS_REGS");
+    if (s_regsPath && *s_regsPath && m_unit == Unit::VU1 && memory && !m_verifyShadow)
+    {
+        constexpr int kGroups = 55, kMem = 54;
+        constexpr uint32_t kQwords = 1024u;
+        static FILE *s_out = std::fopen(s_regsPath, "w");
+        static uint64_t s_run = 0u;
+        static int64_t s_writer[kGroups];
+        static bool s_init = false;
+        static std::vector<int64_t> s_qwWriter(kQwords, -1);
+        static std::vector<uint8_t> s_qwContent(kQwords * 16u, 0u);
+        static const uint64_t s_from = std::getenv("PS2X_VU1_DEPS_FROM") ? std::strtoull(std::getenv("PS2X_VU1_DEPS_FROM"), nullptr, 0) : 0u;
+        static const uint64_t s_to = std::getenv("PS2X_VU1_DEPS_TO") ? std::strtoull(std::getenv("PS2X_VU1_DEPS_TO"), nullptr, 0) : ~0ull;
+        if (!s_init)
+        {
+            for (int g = 0; g < kGroups; ++g)
+                s_writer[g] = -1;
+            s_init = true;
+        }
+        const uint32_t qwords = std::min<uint32_t>(dataSize / 16u, kQwords);
+        const uint64_t tick = memory->gs().vsyncTick.load(std::memory_order_acquire);
+        const uint32_t entryPc = m_state.pc;
+        const VU1State start = m_state;
+        const std::vector<uint8_t> startData(vuData, vuData + dataSize);
+        auto same = [](const void *x, const void *y, size_t n) { return std::memcmp(x, y, n) == 0; };
+        auto shadowRun = [&](const VU1State &state, std::vector<uint8_t> &data, std::vector<uint8_t> &packets,
+                             uint32_t cap, uint64_t &cyclesOut)
+        {
+            auto shadow = std::make_unique<VU1Interpreter>(*this);
+            shadow->m_state = state;
+            shadow->m_verifyShadow = true;
+            shadow->m_gifCapture = &packets;
+            const uint64_t before = shadow->m_cycle;
+            shadow->run(vuCode, codeSize, data.data(), dataSize, gs, memory, cap);
+            cyclesOut = shadow->m_cycle - before;
+            return shadow->m_state;
+        };
+        std::vector<uint8_t> cleanData = startData, cleanPackets;
+        uint64_t cleanCycles = 0u;
+        const VU1State clean = shadowRun(start, cleanData, cleanPackets, std::numeric_limits<uint32_t>::max(), cleanCycles);
+        // VU-written memory still holding what the VU wrote (VIF did not rewrite it).
+        std::vector<uint32_t> vuQw;
+        int64_t memWriter = -1;
+        for (uint32_t qi = 0; qi < qwords; ++qi)
+            if (s_qwWriter[qi] >= 0 && same(startData.data() + qi * 16u, s_qwContent.data() + qi * 16u, 16u))
+            {
+                vuQw.push_back(qi);
+                memWriter = std::max(memWriter, s_qwWriter[qi]);
+            }
+        auto poisonGroup = [&](int g, VU1State &st, std::vector<uint8_t> &data)
+        {
+            if (g < 31)
+                for (int lane = 0; lane < 4; ++lane)
+                    st.vf[g + 1][lane] = 1234567.0f + static_cast<float>(g * 8 + lane);
+            else if (g < 46)
+                st.vi[g - 30] = static_cast<int32_t>(0x1357 ^ ((g - 30) * 0x111));
+            else if (g == 46)
+                for (int lane = 0; lane < 4; ++lane)
+                    st.acc[lane] = 7654321.0f + lane;
+            else if (g == 47) st.q = 3456789.0f;
+            else if (g == 48) st.p = 4567891.0f;
+            else if (g == 49) st.i = 5678912.0f;
+            else if (g == 50) st.r ^= 0x005A5A5Au;
+            else if (g == 51) st.mac ^= 0xFFFFu;
+            else if (g == 52) st.clip ^= 0x00FFFFFFu;
+            else if (g == 53) st.status ^= 0x0FFFu;
+            else
+                for (uint32_t qi : vuQw)
+                    for (uint32_t b = 0; b < 16u; ++b)
+                        data[qi * 16u + b] = static_cast<uint8_t>(0xA5u ^ (qi * 7u + b));
+        };
+        // VU memory by how far back its writer is: 1, 2-3, 4-10, 11-100, >100 runs.
+        auto bucketOf = [](uint64_t d) { return d <= 1 ? 0 : d <= 3 ? 1 : d <= 10 ? 2 : d <= 100 ? 3 : 4; };
+        auto differs = [&](const VU1State &poisoned, const std::vector<uint8_t> &poisonedStart)
+        {
+            std::vector<uint8_t> data = poisonedStart, packets;
+            uint64_t cycles = 0u;
+            const uint32_t cap = static_cast<uint32_t>(std::min<uint64_t>(cleanCycles * 4u + 100000u, 0x7FFFFFFFu));
+            const VU1State pz = shadowRun(poisoned, data, packets, cap, cycles);
+            auto result = [&](const void *pzv, const void *po, const void *cl, const void *st, size_t n)
+            { return (!same(pzv, po, n) || !same(cl, st, n)) ? same(pzv, cl, n) : true; };
+            for (int reg = 1; reg < 32; ++reg)
+                if (!result(pz.vf[reg], poisoned.vf[reg], clean.vf[reg], start.vf[reg], sizeof(pz.vf[reg])))
+                    return true;
+            for (int reg = 1; reg < 16; ++reg)
+                if (!result(&pz.vi[reg], &poisoned.vi[reg], &clean.vi[reg], &start.vi[reg], sizeof(pz.vi[reg])))
+                    return true;
+            if (pz.pc != clean.pc || pz.ebit != clean.ebit || cycles != cleanCycles || packets != cleanPackets)
+                return true;
+            for (uint32_t qi = 0; qi < qwords; ++qi)
+                if (!result(data.data() + qi * 16u, poisonedStart.data() + qi * 16u, cleanData.data() + qi * 16u,
+                            startData.data() + qi * 16u, 16u))
+                    return true;
+            return !(result(pz.acc, poisoned.acc, clean.acc, start.acc, sizeof(pz.acc)) &&
+                     result(&pz.q, &poisoned.q, &clean.q, &start.q, 4) && result(&pz.p, &poisoned.p, &clean.p, &start.p, 4) &&
+                     result(&pz.i, &poisoned.i, &clean.i, &start.i, 4) && result(&pz.r, &poisoned.r, &clean.r, &start.r, 4) &&
+                     result(&pz.mac, &poisoned.mac, &clean.mac, &start.mac, 4) &&
+                     result(&pz.clip, &poisoned.clip, &clean.clip, &start.clip, 4) &&
+                     result(&pz.status, &poisoned.status, &clean.status, &start.status, 4));
+        };
+        const uint64_t run = s_run++;
+        if (tick >= s_from && tick <= s_to && s_out)
+        {
+            std::string inputs;
+            for (int b = 0; b < 5; ++b)
+            {
+                int64_t writer = -1;
+                VU1State poisoned = start;
+                std::vector<uint8_t> poisonedData = startData;
+                for (uint32_t qi : vuQw)
+                    if (bucketOf(run - static_cast<uint64_t>(s_qwWriter[qi])) == b)
+                    {
+                        writer = std::max(writer, s_qwWriter[qi]);
+                        for (uint32_t k = 0; k < 16u; ++k)
+                            poisonedData[qi * 16u + k] = static_cast<uint8_t>(0xA5u ^ (qi * 7u + k));
+                    }
+                if (writer >= 0 && differs(poisoned, poisonedData))
+                    inputs += (inputs.empty() ? "" : ",") + std::to_string(kMem + b) + ":" + std::to_string(writer);
+            }
+            for (int g = 0; g < kMem; ++g)
+            {
+                const int64_t writer = s_writer[g];
+                if (writer < 0 || (g == kMem && vuQw.empty()))
+                    continue; // no VU run in the stream changed it: a constant for this capture
+                VU1State poisoned = start;
+                std::vector<uint8_t> poisonedData = startData;
+                poisonGroup(g, poisoned, poisonedData);
+                if (differs(poisoned, poisonedData))
+                    inputs += (inputs.empty() ? "" : ",") + std::to_string(g) + ":" + std::to_string(writer);
+            }
+            std::fprintf(s_out, "%llu %llu %04x %llu %s\n", static_cast<unsigned long long>(run),
+                         static_cast<unsigned long long>(tick), entryPc, static_cast<unsigned long long>(cleanCycles),
+                         inputs.empty() ? "-" : inputs.c_str());
+        }
+        // Writers: the groups and quadwords this run changed (the clean shadow; the real run is the same).
+        for (int reg = 1; reg < 32; ++reg)
+            if (!same(clean.vf[reg], start.vf[reg], sizeof(clean.vf[reg])))
+                s_writer[reg - 1] = static_cast<int64_t>(run);
+        for (int reg = 1; reg < 16; ++reg)
+            if (clean.vi[reg] != start.vi[reg])
+                s_writer[30 + reg] = static_cast<int64_t>(run);
+        if (!same(clean.acc, start.acc, sizeof(clean.acc))) s_writer[46] = static_cast<int64_t>(run);
+        if (!same(&clean.q, &start.q, 4)) s_writer[47] = static_cast<int64_t>(run);
+        if (!same(&clean.p, &start.p, 4)) s_writer[48] = static_cast<int64_t>(run);
+        if (!same(&clean.i, &start.i, 4)) s_writer[49] = static_cast<int64_t>(run);
+        if (clean.r != start.r) s_writer[50] = static_cast<int64_t>(run);
+        if (clean.mac != start.mac) s_writer[51] = static_cast<int64_t>(run);
+        if (clean.clip != start.clip) s_writer[52] = static_cast<int64_t>(run);
+        if (clean.status != start.status) s_writer[53] = static_cast<int64_t>(run);
+        for (uint32_t qi = 0; qi < qwords; ++qi)
+            if (!same(cleanData.data() + qi * 16u, startData.data() + qi * 16u, 16u))
+            {
+                s_qwWriter[qi] = static_cast<int64_t>(run);
+                std::memcpy(s_qwContent.data() + qi * 16u, cleanData.data() + qi * 16u, 16u);
+            }
+    }
+    // DBZIW-DEBUG issue 039 (option B step 1, research): PS2X_VU1_DEPS=<file> writes, per VU1 run, whether the run's
+    // results depend on what the run before it wrote. Two shadow copies of this run (the verifier's mechanism: GIF
+    // packets captured, not sent; nothing of the real run changes): one as it is, one with every register and VU
+    // memory quadword the previous run wrote (and VIF has not rewritten since) replaced by junk. Same results (written
+    // registers and memory, GIF packets, end pc, cycles) = independent of the previous run. Slow; offline replays only.
+    static const char *s_depsPath = std::getenv("PS2X_VU1_DEPS");
+    if (s_depsPath && *s_depsPath && m_unit == Unit::VU1 && memory && !m_verifyShadow)
+    {
+        constexpr uint32_t kQwords = 1024u;
+        struct Prev
+        {
+            bool valid = false;
+            std::vector<uint8_t> data;
+            uint32_t vfMask = 0u;
+            uint16_t viMask = 0u;
+            bool acc = false, q = false, p = false, i = false, r = false, mac = false, clip = false, status = false;
+            std::vector<bool> qw;
+        };
+        static Prev s_prev;
+        static FILE *s_deps = std::fopen(s_depsPath, "w");
+        static uint64_t s_runIndex = 0u;
+        // PS2X_VU1_DEPS_ALL=1: junk in every register at entry, not only the previous run's (memory as before): does
+        // the run need any register state from earlier runs at all?
+        static const bool s_all = [] { const char *v = std::getenv("PS2X_VU1_DEPS_ALL"); return v && *v == '1'; }();
+        const uint32_t qwords = std::min<uint32_t>(dataSize / 16u, kQwords);
+        const uint64_t tick = memory->gs().vsyncTick.load(std::memory_order_acquire);
+        const uint32_t entryPc = m_state.pc;
+        const VU1State start = m_state;
+        const std::vector<uint8_t> startData(vuData, vuData + dataSize);
+
+        auto shadowRun = [&](const VU1State &state, std::vector<uint8_t> &data, std::vector<uint8_t> &packets,
+                             uint32_t cap, uint64_t &cyclesOut)
+        {
+            auto shadow = std::make_unique<VU1Interpreter>(*this);
+            shadow->m_state = state;
+            shadow->m_verifyShadow = true;
+            shadow->m_gifCapture = &packets;
+            const uint64_t before = shadow->m_cycle;
+            shadow->run(vuCode, codeSize, data.data(), dataSize, gs, memory, cap);
+            cyclesOut = shadow->m_cycle - before;
+            return shadow->m_state;
+        };
+        std::vector<uint8_t> cleanData = startData, cleanPackets;
+        uint64_t cleanCycles = 0u;
+        const VU1State clean = shadowRun(start, cleanData, cleanPackets, std::numeric_limits<uint32_t>::max(), cleanCycles);
+
+        // What the previous run wrote and is still there now.
+        VU1State poisoned = start;
+        std::vector<uint8_t> poisonedData = startData;
+        uint32_t poisonedRegs = 0u, poisonedQw = 0u;
+        if (s_prev.valid)
+        {
+            for (int reg = 1; reg < 32; ++reg)
+                if (s_all || ((s_prev.vfMask >> reg) & 1u))
+                    for (int lane = 0; lane < 4; ++lane)
+                        poisoned.vf[reg][lane] = 1234567.0f + static_cast<float>(reg * 8 + lane), ++poisonedRegs;
+            for (int reg = 1; reg < 16; ++reg)
+                if (s_all || ((s_prev.viMask >> reg) & 1u))
+                    poisoned.vi[reg] = static_cast<int32_t>(0x1357 ^ (reg * 0x111)), ++poisonedRegs;
+            if (s_all || s_prev.acc) for (int lane = 0; lane < 4; ++lane) poisoned.acc[lane] = 7654321.0f + lane;
+            if (s_all || s_prev.q) poisoned.q = 3456789.0f;
+            if (s_all || s_prev.p) poisoned.p = 4567891.0f;
+            if (s_all || s_prev.i) poisoned.i = 5678912.0f;
+            if (s_all || s_prev.r) poisoned.r ^= 0x005A5A5Au;
+            if (s_all || s_prev.mac) poisoned.mac ^= 0xFFFFu;
+            if (s_all || s_prev.clip) poisoned.clip ^= 0x00FFFFFFu;
+            if (s_all || s_prev.status) poisoned.status ^= 0x0FFFu;
+            for (uint32_t qi = 0; qi < qwords && qi < s_prev.qw.size(); ++qi)
+                if (s_prev.qw[qi] && s_prev.data.size() >= (qi + 1u) * 16u &&
+                    std::memcmp(startData.data() + qi * 16u, s_prev.data.data() + qi * 16u, 16u) == 0)
+                {
+                    for (uint32_t b = 0; b < 16u; ++b)
+                        poisonedData[qi * 16u + b] = static_cast<uint8_t>(0xA5u ^ (qi * 7u + b));
+                    ++poisonedQw;
+                }
+        }
+        const char *reason = s_prev.valid ? "" : "first";
+        if (s_prev.valid)
+        {
+            std::vector<uint8_t> poisonPackets;
+            uint64_t poisonCycles = 0u;
+            const std::vector<uint8_t> poisonedStart = poisonedData;
+            const uint32_t cap = static_cast<uint32_t>(std::min<uint64_t>(cleanCycles * 4u + 100000u, 0x7FFFFFFFu));
+            const VU1State pz = shadowRun(poisoned, poisonedData, poisonPackets, cap, poisonCycles);
+            auto same = [](const void *x, const void *y, size_t n) { return std::memcmp(x, y, n) == 0; };
+            // A location is a result of this run when either shadow changed it; then both must agree. A location
+            // neither changed is no result (the poisoned run left the junk alone, the clean run its old value).
+            auto result = [&](const void *pzv, const void *po, const void *cl, const void *st, size_t n)
+            { return (!same(pzv, po, n) || !same(cl, st, n)) ? same(pzv, cl, n) : true; };
+            for (int reg = 1; reg < 32 && !reason[0]; ++reg)
+                if (!result(pz.vf[reg], poisoned.vf[reg], clean.vf[reg], start.vf[reg], sizeof(pz.vf[reg])))
+                    reason = "vf";
+            for (int reg = 1; reg < 16 && !reason[0]; ++reg)
+                if (!result(&pz.vi[reg], &poisoned.vi[reg], &clean.vi[reg], &start.vi[reg], sizeof(pz.vi[reg])))
+                    reason = "vi";
+            if (!reason[0] && (pz.pc != clean.pc || pz.ebit != clean.ebit || poisonCycles != cleanCycles))
+                reason = "flow";
+            if (!reason[0] && poisonPackets != cleanPackets)
+                reason = "gif";
+            for (uint32_t qi = 0; qi < qwords && !reason[0]; ++qi)
+                if (!result(poisonedData.data() + qi * 16u, poisonedStart.data() + qi * 16u, cleanData.data() + qi * 16u,
+                            startData.data() + qi * 16u, 16u))
+                    reason = "mem";
+            if (!reason[0] && !result(pz.acc, poisoned.acc, clean.acc, start.acc, sizeof(pz.acc)))
+                reason = "acc";
+            if (!reason[0] && !(result(&pz.q, &poisoned.q, &clean.q, &start.q, 4) &&
+                                result(&pz.p, &poisoned.p, &clean.p, &start.p, 4) &&
+                                result(&pz.i, &poisoned.i, &clean.i, &start.i, 4) &&
+                                result(&pz.r, &poisoned.r, &clean.r, &start.r, 4)))
+                reason = "qpir";
+            if (!reason[0] && !(result(&pz.mac, &poisoned.mac, &clean.mac, &start.mac, 4) &&
+                                result(&pz.clip, &poisoned.clip, &clean.clip, &start.clip, 4) &&
+                                result(&pz.status, &poisoned.status, &clean.status, &start.status, 4)))
+                reason = "flags";
+        }
+        if (s_deps)
+            std::fprintf(s_deps, "%llu %llu %04x %d %llu %u %u %s\n", static_cast<unsigned long long>(s_runIndex++),
+                         static_cast<unsigned long long>(tick), entryPc, clean.ebit ? 1 : 0,
+                         static_cast<unsigned long long>(cleanCycles), poisonedRegs, poisonedQw,
+                         reason[0] ? reason : "independent");
+        // This run's writes, for the next run (from the clean shadow: the real run is the same, the verifier says).
+        s_prev.valid = true;
+        s_prev.data = cleanData;
+        s_prev.vfMask = 0u;
+        s_prev.viMask = 0u;
+        for (int reg = 1; reg < 32; ++reg)
+            if (std::memcmp(clean.vf[reg], start.vf[reg], sizeof(clean.vf[reg])) != 0)
+                s_prev.vfMask |= 1u << reg;
+        for (int reg = 1; reg < 16; ++reg)
+            if (clean.vi[reg] != start.vi[reg])
+                s_prev.viMask = static_cast<uint16_t>(s_prev.viMask | (1u << reg));
+        s_prev.acc = std::memcmp(clean.acc, start.acc, sizeof(clean.acc)) != 0;
+        s_prev.q = clean.q != start.q;
+        s_prev.p = clean.p != start.p;
+        s_prev.i = clean.i != start.i;
+        s_prev.r = clean.r != start.r;
+        s_prev.mac = clean.mac != start.mac;
+        s_prev.clip = clean.clip != start.clip;
+        s_prev.status = clean.status != start.status;
+        s_prev.qw.assign(qwords, false);
+        for (uint32_t qi = 0; qi < qwords; ++qi)
+            s_prev.qw[qi] = std::memcmp(cleanData.data() + qi * 16u, startData.data() + qi * 16u, 16u) != 0;
     }
     m_lastRunLifted = false;
     if (!m_verifyShadow && runLiftedChecked(vuCode, codeSize, vuData, dataSize, gs, memory))

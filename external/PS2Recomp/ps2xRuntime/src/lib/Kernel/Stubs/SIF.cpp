@@ -317,22 +317,31 @@ namespace ps2_stubs
 
         try
         {
-            GuestInvocation invocation{};
-            invocation.kind = GuestInvocationKind::SifCommand;
-            invocation.tag = commandId;
-            invocation.context = runtime->cpu();
-            invocation.context.pc = registered.function;
-            SET_GPR_U32(&invocation.context, 4, packetAddress);
-            SET_GPR_U32(&invocation.context, 5, registered.argument);
-            SET_GPR_U32(&invocation.context, 6, 0u);
-            SET_GPR_U32(&invocation.context, 7, 0u);
-            SET_GPR_U32(&invocation.context, 29, 0u);
-            SET_GPR_U32(&invocation.context, 31, 0u);
-            invocation.onComplete = [runtime, packetAddress](const R5900Context &, R5900Context &)
+            auto queue = [runtime, commandId, registered, packetAddress]
             {
-                runtime->guestFree(packetAddress);
+                GuestInvocation invocation{};
+                invocation.kind = GuestInvocationKind::SifCommand;
+                invocation.tag = commandId;
+                invocation.context = runtime->cpu();
+                invocation.context.pc = registered.function;
+                SET_GPR_U32(&invocation.context, 4, packetAddress);
+                SET_GPR_U32(&invocation.context, 5, registered.argument);
+                SET_GPR_U32(&invocation.context, 6, 0u);
+                SET_GPR_U32(&invocation.context, 7, 0u);
+                SET_GPR_U32(&invocation.context, 29, 0u);
+                SET_GPR_U32(&invocation.context, 31, 0u);
+                invocation.onComplete = [runtime, packetAddress](const R5900Context &, R5900Context &)
+                {
+                    runtime->guestFree(packetAddress);
+                };
+                runtime->eeScheduler().queueInvocation(std::move(invocation));
             };
-            runtime->eeScheduler().queueInvocation(std::move(invocation));
+            // DBZIW 039 (v3 stage 3): sent from the IOP's own thread, the handler is queued by the game thread at its
+            // next event service (the game thread owns the EE context and the invocation queue).
+            if (runtime->eeScheduler().isExecutorThread())
+                queue();
+            else
+                runtime->eeScheduler().postHostCall(std::move(queue));
             return true;
         }
         catch (...)

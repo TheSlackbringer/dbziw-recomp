@@ -343,6 +343,9 @@ public:
 
     // EE timers advance from the scheduler's emulated EE-cycle clock. The
     // returned mask uses bits 0..3 for newly raised TIM0..TIM3 interrupts.
+    // DBZIW 039 (v3 stage 3): the cycles are applied to the timers only when something can see them: at the cycle of
+    // the next possible interrupt, or when the game reads or writes a timer register. The timer model gives the same
+    // state over one long step as over many short ones (CTest ee_timer_lazy checks it against the per-step model).
     uint32_t advanceEeTimers(uint64_t eeCycles) noexcept;
     [[nodiscard]] uint64_t cyclesUntilNextEeTimerInterrupt() const noexcept;
     void resetEeTimers() noexcept;
@@ -532,6 +535,16 @@ public:
     };
 
     std::array<EeTimer, 4> m_eeTimers{};
+    // DBZIW 039 (v3 stage 3): EE cycles accounted but not yet applied to m_eeTimers, and the pending count at which the
+    // next timer interrupt can be raised (max: none can be).
+    uint64_t m_eeTimerPendingCycles = 0;
+    uint64_t m_eeTimerEventCycles = ~0ull;
+    uint32_t m_eeTimerHeldInterrupts = 0; // raised while applying for a register access (none expected): next advance
+    bool m_gifStatFqcSet = false;          // GIF_STAT may hold an FQC, which the next advance clears
+    uint32_t applyEeTimerCycles(uint64_t eeCycles) noexcept;
+    void syncEeTimers() noexcept;
+    void refreshEeTimerEvent() noexcept;
+    [[nodiscard]] uint64_t cyclesUntilEeTimerEventSynced() const noexcept;
     IpuInputHook *m_ipuInputHook = nullptr;
     uint64_t m_ipuInputCredit = 0u;
     bool m_ipuInputTagLoaded = false;

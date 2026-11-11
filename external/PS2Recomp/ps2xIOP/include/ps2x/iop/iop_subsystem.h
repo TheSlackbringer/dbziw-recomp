@@ -13,6 +13,10 @@ namespace ps2x::iop
     // The host-clocked IOP catches up with the wall clock once per this many EE cycles (~14 us of PS2 time); the EE
     // scheduler uses the same step while an IOP request is in flight (DW5 009 v4.4, 015).
     inline constexpr uint64_t kIopHostClockPollEeCycles = 4096u;
+    // DBZIW 039 (v3 stage 3): the same step for the IOP's own host thread, in IOP cycles (EE:IOP clock 8:1) and in
+    // nanoseconds (36.864 MHz).
+    inline constexpr uint64_t kIopHostClockStepIopCycles = kIopHostClockPollEeCycles / 8u;
+    inline constexpr uint64_t kIopHostClockStepNs = kIopHostClockStepIopCycles * 1'000'000'000ull / 36'864'000ull;
 
     class IopSubsystem
     {
@@ -44,6 +48,10 @@ namespace ps2x::iop
         // DW5 009 v4.5 (015): the IOP has work now (a request in flight or a runnable IOP thread).
         [[nodiscard]] bool busy() const noexcept;
         void runToHostClock() noexcept;
+        // DBZIW 039 (v3 stage 3), for the IOP's own host thread: one slice of at most maxIopCycles toward the wall
+        // clock (returns the IOP cycles still behind), and the time to the IOP's next scheduled event (max: none).
+        uint64_t runToHostClockStep(uint64_t maxIopCycles) noexcept;
+        [[nodiscard]] uint64_t nanosecondsUntilNextEvent() const noexcept;
         void onSifTransfer(const SifTransfer &transfer);
 
         // Physical IOP RAM access shared by the emulator, SIF DMA, and HLE services. Addresses are IOP addresses.

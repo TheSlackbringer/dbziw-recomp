@@ -33,6 +33,12 @@ namespace ps2x::iop::detail
         [[nodiscard]] bool busy() const noexcept;
         // Runs the host-clocked IOP up to the wall clock now (DW5 009 v4.4, 015: in steps while the EE waits).
         void runToHostClock() noexcept;
+        // DBZIW 039 (v3 stage 3): as runToHostClock, but at most maxIopCycles of IOP time; returns the IOP cycles still
+        // behind the wall clock (0: caught up). For the IOP's own host thread, which runs the IOP in slices.
+        uint64_t runToHostClockStep(uint64_t maxIopCycles) noexcept;
+        // DBZIW 039: nanoseconds of IOP time until the next event the IOP has scheduled (a thread wake-up, a DMA end, a
+        // timer, a callback); max: none.
+        [[nodiscard]] uint64_t nanosecondsUntilNextEvent() const noexcept;
         [[nodiscard]] bool hasRpcServer(uint32_t sid) const noexcept;
         void onSifTransfer(const SifTransfer &transfer);
 

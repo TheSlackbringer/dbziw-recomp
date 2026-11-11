@@ -19,6 +19,8 @@
 #include <atomic>
 #include <array>
 #include <mutex>
+#include <condition_variable>
+#include <thread>
 #include <filesystem>
 #include <memory>
 #include <unordered_map>
@@ -334,6 +336,13 @@ public:
     bool writeIopMemory(uint32_t address, const void *source, size_t size);
     bool zeroIopMemory(uint32_t address, size_t size);
     bool isIopMemoryRange(uint32_t address, size_t size) const;
+    // DBZIW 039 (v3 stage 3): the IOP runs on its own host thread in normal mode (PS2X_IOP_THREAD=0: on the game
+    // thread as before); the deterministic mode (022) keeps it on the game thread, on EE cycles / 8.
+    [[nodiscard]] bool iopThreaded() const noexcept { return m_iopThreaded.load(std::memory_order_acquire); }
+    void kickIopThread() noexcept; // the IOP may have new work: wake its thread if it sleeps
+    // DBZIW-DEBUG (039): the [game-thread] and [iop-thread] CPU-time lines, printed at PS2X_EXIT_TICK, which ends
+    // the process (_Exit) before either thread finishes; each thread prints its own line (its own CPU clock).
+    void printThreadTimes() noexcept;
 
     using DebugUiCallback = void (*)(PS2Runtime &runtime, void *userData);
     void setDebugUiCallbacks(DebugUiCallback initCallback,
@@ -562,6 +571,22 @@ private:
     GS m_gs;
     std::unique_ptr<PS2IopHostAdapter> m_iopHost;
     std::unique_ptr<ps2x::iop::IopSubsystem> m_iopSubsystem;
+    // DBZIW 039 (v3 stage 3): held by whoever runs IOP code or touches IOP state: the IOP thread for each slice, any
+    // other thread for its calls into the IOP (recursive: IOP code calls back into the runtime, which calls the IOP).
+    mutable std::recursive_mutex m_iopMutex;
+    std::thread m_iopThread;
+    std::atomic<bool> m_iopThreaded{false};
+    std::atomic<bool> m_iopThreadStop{false};
+    std::atomic<uint64_t> m_iopKicks{0};
+    std::mutex m_iopWakeMutex;
+    std::condition_variable m_iopWakeCv;
+    bool m_iopThreadSleeping = false; // m_iopWakeMutex
+    std::atomic<bool> m_iopReportWanted{false}; // DBZIW-DEBUG (039): printThreadTimes asks the IOP thread
+    std::atomic<bool> m_iopReported{false};
+    double m_gameCpuStartMs = 0.0; // DBZIW-DEBUG (039): game thread only, its CPU time when the scheduler started
+    void startIopThread();
+    void stopIopThread();
+    void iopThreadMain();
     PS2AudioBackend m_audioBackend;
     PSPadBackend m_padBackend;
     PS2RomDevice m_romDevice;

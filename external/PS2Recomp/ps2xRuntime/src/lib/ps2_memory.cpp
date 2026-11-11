@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstring>
 #include <limits>
+#include <utility>
 #include <stdexcept>
 #include <algorithm>
 #include <string>
@@ -401,6 +402,9 @@ bool PS2Memory::initialize(size_t ramSize)
 void PS2Memory::resetEeTimers() noexcept
 {
     m_eeTimers = {};
+    m_eeTimerPendingCycles = 0u;
+    m_eeTimerEventCycles = ~0ull; // no timer counts
+    m_eeTimerHeldInterrupts = 0u;
 }
 
 uint32_t PS2Memory::advanceEeTimers(uint64_t eeCycles) noexcept
@@ -410,12 +414,42 @@ uint32_t PS2Memory::advanceEeTimers(uint64_t eeCycles) noexcept
         return 0u;
     }
 
-    constexpr uint32_t kGifStat = 0x10003020u;
-    constexpr uint32_t kGifFqcMask = 0x1F000000u;
-    auto gifStatIt = m_ioRegisters.find(kGifStat);
-    if (gifStatIt != m_ioRegisters.end())
-        gifStatIt->second &= ~kGifFqcMask;
+    if (m_gifStatFqcSet)
+    {
+        constexpr uint32_t kGifStat = 0x10003020u;
+        constexpr uint32_t kGifFqcMask = 0x1F000000u;
+        m_gifStatFqcSet = false;
+        auto gifStatIt = m_ioRegisters.find(kGifStat);
+        if (gifStatIt != m_ioRegisters.end())
+            gifStatIt->second &= ~kGifFqcMask;
+    }
 
+    // DBZIW 039 (v3 stage 3): before the cycle of the next possible interrupt nothing the game can see changes.
+    m_eeTimerPendingCycles += eeCycles;
+    if (m_eeTimerPendingCycles < m_eeTimerEventCycles)
+    {
+        return std::exchange(m_eeTimerHeldInterrupts, 0u);
+    }
+    const uint32_t interruptMask = applyEeTimerCycles(std::exchange(m_eeTimerPendingCycles, 0u));
+    refreshEeTimerEvent();
+    return interruptMask | std::exchange(m_eeTimerHeldInterrupts, 0u);
+}
+
+void PS2Memory::syncEeTimers() noexcept
+{
+    if (m_eeTimerPendingCycles == 0u)
+        return;
+    m_eeTimerHeldInterrupts |= applyEeTimerCycles(std::exchange(m_eeTimerPendingCycles, 0u));
+    refreshEeTimerEvent(); // counted from the new state
+}
+
+void PS2Memory::refreshEeTimerEvent() noexcept
+{
+    m_eeTimerEventCycles = cyclesUntilEeTimerEventSynced();
+}
+
+uint32_t PS2Memory::applyEeTimerCycles(uint64_t eeCycles) noexcept
+{
     uint32_t interruptMask = 0u;
     for (size_t index = 0; index < m_eeTimers.size(); ++index)
     {
@@ -480,6 +514,14 @@ uint32_t PS2Memory::advanceEeTimers(uint64_t eeCycles) noexcept
 }
 
 uint64_t PS2Memory::cyclesUntilNextEeTimerInterrupt() const noexcept
+{
+    // DBZIW 039: the pending cycles are always fewer than the event's (advanceEeTimers applies them when they reach it).
+    if (m_eeTimerEventCycles == std::numeric_limits<uint64_t>::max())
+        return m_eeTimerEventCycles;
+    return m_eeTimerEventCycles - m_eeTimerPendingCycles;
+}
+
+uint64_t PS2Memory::cyclesUntilEeTimerEventSynced() const noexcept
 {
     uint64_t nearest = std::numeric_limits<uint64_t>::max();
     for (const EeTimer &timer : m_eeTimers)
@@ -1274,6 +1316,8 @@ void PS2Memory::write128(uint32_t address, __m128i value, uint8_t asid)
 
 bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
 {
+    if (address == 0x10003020u) // GIF_STAT: any stored FQC is cleared at the next timer advance (DBZIW 039)
+        m_gifStatFqcSet = true;
     if ((address == 0x10009000u || address == 0x1000A000u) &&
         !(value & 0x100u) && !ps2x::device::executingCommand())
     {
@@ -1317,6 +1361,12 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
     uint32_t timerOffset = 0u;
     if (decodeEeTimerRegister(address, timerIndex, timerOffset))
     {
+        syncEeTimers(); // DBZIW 039: the write applies to the timers as they are now
+        struct RefreshEvent
+        {
+            PS2Memory &memory;
+            ~RefreshEvent() { memory.refreshEeTimerEvent(); }
+        } refresh{*this};
         EeTimer &timer = m_eeTimers[timerIndex];
         switch (timerOffset)
         {
@@ -2233,6 +2283,7 @@ namespace
             constexpr uint32_t kGifFqcMask = 0x1F000000u;
             uint32_t &gifStat = mem.m_ioRegisters[kGifStat];
             gifStat = (gifStat & ~kGifFqcMask) | (observedGifQwc << 24u);
+            mem.m_gifStatFqcSet = true; // DBZIW 039: the next timer advance clears it
         }
 
         ps2x::device::TransferSnapshot snapshot;
@@ -2296,6 +2347,7 @@ void PS2Memory::processPendingTransfers()
         constexpr uint32_t kGifFqcMask = 0x1F000000u;
         uint32_t &gifStat = m_ioRegisters[kGifStat];
         gifStat = (gifStat & ~kGifFqcMask) | (observedGifQwc << 24u);
+        m_gifStatFqcSet = true; // DBZIW 039: the next timer advance clears it
     }
 
     for (size_t idx = 0; idx < m_pendingGifTransfers.size(); ++idx)
@@ -2919,6 +2971,7 @@ uint32_t PS2Memory::readIORegister(uint32_t address)
     uint32_t timerOffset = 0u;
     if (decodeEeTimerRegister(address, timerIndex, timerOffset))
     {
+        syncEeTimers(); // DBZIW 039: the timers as they are now
         const EeTimer &timer = m_eeTimers[timerIndex];
         switch (timerOffset)
         {
@@ -3323,6 +3376,7 @@ bool PS2Memory::loadState(std::istream &in)
     std::memcpy(dma_regs, hdr.dmaRegs, sizeof(dma_regs));
 
     m_ioRegisters.clear();
+    m_gifStatFqcSet = true; // DBZIW 039: a loaded GIF_STAT's FQC is cleared at the next timer advance, as before
     for (uint32_t i = 0; i < hdr.ioRegCount; ++i)
     {
         uint32_t k = 0, v = 0;

@@ -1,6 +1,8 @@
 #include "runtime/hotkeys.h"
 #include "runtime/gs/gs_present_stats.h"
 #include "runtime/ps2_deterministic.h"
+#include "runtime/ps2_spin_wait.h"
+#include <ctime>
 #include "runtime/ps2_settings.h"
 #include "ps2_runtime.h"
 #include "ps2_log.h"
@@ -64,6 +66,7 @@ static void ps2CrashSignalHandler(int sig)
 #include <initializer_list>
 #include <limits>
 #include <chrono>
+#include <future>
 #include <atomic>
 #include <thread>
 #include <unordered_map>
@@ -1018,6 +1021,8 @@ namespace ps2x_dev
                     std::cerr << "[dev] exit tick " << exitTick << " reached" << std::endl;
                 else
                     std::cerr << "[dev] exit tick " << exitTick << " reached (window at " << tick << ")" << std::endl;
+                if (runtime)
+                    runtime->printThreadTimes(); // DBZIW-DEBUG (039)
                 ps2x::device::quiesceAll(std::chrono::milliseconds(2000));
                 ps2prof::flush(); // DBZIW-DEBUG issue 010: _Exit skips atexit
                 GSTrace::shutdown();
@@ -1601,6 +1606,7 @@ PS2Runtime::~PS2Runtime()
         requestStop();
         // Join the device worker before the GS/VU1/arbiter members it drives go away.
         ps2x::device::detach(m_memory);
+        stopIopThread(); // DBZIW 039
         m_iopSubsystem.reset();
         m_iopHost.reset();
         m_audioBackend.stopPcmStream();
@@ -1637,41 +1643,271 @@ PS2Runtime::~PS2Runtime()
     }
 }
 
+namespace
+{
+    // DBZIW 039 (v3 stage 3): after a call that may give the IOP work, its own thread is woken if it sleeps.
+    struct IopKickOnExit
+    {
+        PS2Runtime &runtime;
+        ~IopKickOnExit() { runtime.kickIopThread(); }
+    };
+
+    // An idle IOP thread looks again at least this often: the IOP's sound output and its sound interrupt follow IOP
+    // time without a scheduled wake-up (well inside the output buffer, ~100 ms before playback starts).
+    constexpr std::chrono::nanoseconds kIopIdleWakeLimit{1'000'000};
+
+    // DBZIW-DEBUG (039): CPU time of the calling thread, for the exit lines of the IOP and game threads.
+    double dbziwThreadCpuMs() noexcept
+    {
+        timespec now{};
+        return clock_gettime(CLOCK_THREAD_CPUTIME_ID, &now) == 0
+                   ? static_cast<double>(now.tv_sec) * 1e3 + static_cast<double>(now.tv_nsec) / 1e6
+                   : 0.0;
+    }
+}
+
+void PS2Runtime::kickIopThread() noexcept
+{
+    if (!m_iopThreaded.load(std::memory_order_acquire))
+        return;
+    m_iopKicks.fetch_add(1u, std::memory_order_acq_rel);
+    bool wake = false;
+    {
+        std::lock_guard<std::mutex> lock(m_iopWakeMutex);
+        wake = m_iopThreadSleeping;
+    }
+    if (wake)
+        m_iopWakeCv.notify_one();
+}
+
+void PS2Runtime::startIopThread()
+{
+    if (m_iopThread.joinable() || ps2x::deterministicMode())
+        return;
+    if (const char *v = std::getenv("PS2X_IOP_THREAD"); v && *v == '0')
+    {
+        std::fprintf(stderr, "[iop-thread] off (PS2X_IOP_THREAD=0): the IOP runs on the game thread\n");
+        return;
+    }
+    m_iopThreadStop.store(false, std::memory_order_release);
+    {
+        std::lock_guard<std::recursive_mutex> iopLock(m_iopMutex);
+        m_iopThreaded.store(true, std::memory_order_release);
+    }
+    m_iopThread = std::thread([this] { iopThreadMain(); });
+    std::fprintf(stderr, "[iop-thread] on: the IOP runs on its own thread (DBZIW 039)\n");
+}
+
+void PS2Runtime::stopIopThread()
+{
+    if (!m_iopThread.joinable())
+        return;
+    m_iopThreadStop.store(true, std::memory_order_release);
+    kickIopThread();
+    m_iopThread.join();
+    std::lock_guard<std::recursive_mutex> iopLock(m_iopMutex);
+    m_iopThreaded.store(false, std::memory_order_release);
+}
+
+void PS2Runtime::iopThreadMain()
+{
+    // DBZIW 039 (v3 stage 3): the IOP follows the wall clock as the game thread's catch-up did (runHostClock), in
+    // slices of one host-clock step, releasing the IOP lock between slices. With a runnable IOP thread or a request in
+    // flight it keeps to the clock step by step; otherwise it sleeps until the IOP's next scheduled event (at most
+    // kIopIdleWakeLimit) or until another thread hands the IOP work (kickIopThread).
+    ThreadNaming::SetCurrentThreadName("ps2-iop");
+    using Clock = std::chrono::steady_clock;
+    constexpr auto kStep = std::chrono::nanoseconds(ps2x::iop::kIopHostClockStepNs);
+    uint64_t seenKicks = m_iopKicks.load(std::memory_order_acquire);
+    uint64_t slices = 0u, busySteps = 0u, idleWaits = 0u; // DBZIW-DEBUG: the exit line
+    const auto threadStart = Clock::now();
+    // DBZIW-DEBUG (039): PS2X_IOP_THREAD_LAG=1, once per second: how far the IOP fell behind the wall clock at
+    // most (after a slice, in us), the IOP thread's CPU time, slices, busy steps and idle waits in that second.
+    const bool trace = [] { const char *v = std::getenv("PS2X_IOP_THREAD_LAG"); return v && *v && *v != '0'; }();
+    auto traceStart = threadStart;
+    double traceCpuMs = dbziwThreadCpuMs();
+    uint64_t traceMaxBehind = 0u, traceSlices = 0u, traceBusy = 0u, traceIdle = 0u, traceBehindSlices = 0u;
+    // Wall time in that second by what the thread did (exact, unlike the thread CPU clock, which Windows charges by
+    // its timer tick): waiting for the IOP lock, running IOP slices, spinning between busy steps, sleeping.
+    Clock::duration traceLock{}, traceWork{}, traceSpin{}, traceSleep{};
+    const auto ms = [](Clock::duration d) { return std::chrono::duration<double, std::milli>(d).count(); };
+    const auto printLine = [&]
+    {
+        const double wallMs = std::chrono::duration<double, std::milli>(Clock::now() - threadStart).count();
+        std::fprintf(stderr, "[iop-thread] exit cpu-ms=%.0f wall-ms=%.0f slices=%llu busy-steps=%llu idle-waits=%llu kicks=%llu\n",
+                     dbziwThreadCpuMs(), wallMs, static_cast<unsigned long long>(slices),
+                     static_cast<unsigned long long>(busySteps), static_cast<unsigned long long>(idleWaits),
+                     static_cast<unsigned long long>(m_iopKicks.load(std::memory_order_acquire)));
+    };
+    while (!m_iopThreadStop.load(std::memory_order_acquire))
+    {
+        if (m_iopReportWanted.load(std::memory_order_relaxed) &&
+            m_iopReportWanted.exchange(false, std::memory_order_acq_rel)) // DBZIW-DEBUG (039): exit tick
+        {
+            printLine();
+            m_iopReported.store(true, std::memory_order_release);
+        }
+        ++slices;
+        if (trace)
+        {
+            const auto now = Clock::now();
+            if (now - traceStart >= std::chrono::seconds(1))
+            {
+                const double cpu = dbziwThreadCpuMs();
+                std::fprintf(stderr, "[iop-thread] second max-behind-us=%.0f behind-slices=%llu slices=%llu busy-steps=%llu idle-waits=%llu cpu-ms=%.0f wall-ms=%.0f lock-ms=%.1f work-ms=%.1f spin-ms=%.1f sleep-ms=%.1f\n",
+                             static_cast<double>(traceMaxBehind) * 1e6 / 36864000.0,
+                             static_cast<unsigned long long>(traceBehindSlices),
+                             static_cast<unsigned long long>(slices - traceSlices),
+                             static_cast<unsigned long long>(busySteps - traceBusy),
+                             static_cast<unsigned long long>(idleWaits - traceIdle), cpu - traceCpuMs,
+                             ms(now - traceStart), ms(traceLock), ms(traceWork), ms(traceSpin), ms(traceSleep));
+                traceLock = traceWork = traceSpin = traceSleep = Clock::duration{};
+                traceStart = now;
+                traceCpuMs = cpu;
+                traceMaxBehind = traceBehindSlices = 0u;
+                traceSlices = slices;
+                traceBusy = busySteps;
+                traceIdle = idleWaits;
+            }
+        }
+        uint64_t behind = 0u;
+        bool busy = false;
+        uint64_t untilNs = 0u;
+        {
+            const auto lockStart = trace ? Clock::now() : Clock::time_point{};
+            std::lock_guard<std::recursive_mutex> iopLock(m_iopMutex);
+            const auto workStart = trace ? Clock::now() : Clock::time_point{};
+            behind = m_iopSubsystem->runToHostClockStep(ps2x::iop::kIopHostClockStepIopCycles);
+            busy = m_iopSubsystem->busy();
+            if (behind == 0u && !busy)
+                untilNs = m_iopSubsystem->nanosecondsUntilNextEvent();
+            if (trace)
+            {
+                traceLock += workStart - lockStart;
+                traceWork += Clock::now() - workStart;
+            }
+        }
+        if (behind != 0u)
+        {
+            if (trace)
+            {
+                traceMaxBehind = std::max(traceMaxBehind, behind);
+                ++traceBehindSlices;
+            }
+            continue; // still behind the wall clock: the next slice (waiting callers took the lock in between)
+        }
+        if (busy)
+        {
+            ++busySteps;
+            const auto spinStart = Clock::now();
+            const auto stepEnd = spinStart + kStep;
+            (void)ps2x::spinUntil([&]
+                                  { return Clock::now() >= stepEnd ||
+                                           m_iopKicks.load(std::memory_order_acquire) != seenKicks ||
+                                           m_iopThreadStop.load(std::memory_order_acquire); },
+                                  kStep);
+            if (trace)
+                traceSpin += Clock::now() - spinStart;
+            seenKicks = m_iopKicks.load(std::memory_order_acquire);
+            continue;
+        }
+        const auto wait = std::chrono::nanoseconds(
+            std::min<uint64_t>(untilNs, static_cast<uint64_t>(kIopIdleWakeLimit.count())));
+        ++idleWaits;
+        const auto sleepStart = trace ? Clock::now() : Clock::time_point{};
+        std::unique_lock<std::mutex> wakeLock(m_iopWakeMutex);
+        m_iopThreadSleeping = true;
+        m_iopWakeCv.wait_for(wakeLock, wait, [&]
+                             { return m_iopThreadStop.load(std::memory_order_acquire) ||
+                                      m_iopKicks.load(std::memory_order_acquire) != seenKicks; });
+        m_iopThreadSleeping = false;
+        if (trace)
+            traceSleep += Clock::now() - sleepStart;
+        seenKicks = m_iopKicks.load(std::memory_order_acquire);
+    }
+    printLine();
+}
+
+void PS2Runtime::printThreadTimes() noexcept
+{
+    // DBZIW-DEBUG (039): each thread reads its own CPU clock, so each prints its own line; waits at most 0.5 s each.
+    using namespace std::chrono_literals;
+    if (m_eeScheduler)
+    {
+        const auto printGame = [this]
+        {
+            std::fprintf(stderr, "[game-thread] exit cpu-ms=%.0f fields=%llu iop-thread=%d\n",
+                         dbziwThreadCpuMs() - m_gameCpuStartMs,
+                         static_cast<unsigned long long>(m_eeScheduler->currentVSyncTick()), iopThreaded() ? 1 : 0);
+        };
+        if (m_eeScheduler->isExecutorThread())
+            printGame();
+        else
+        {
+            auto done = std::make_shared<std::promise<void>>();
+            std::future<void> printed = done->get_future();
+            m_eeScheduler->postHostCall([printGame, done]
+                                        { printGame(); done->set_value(); });
+            (void)printed.wait_for(500ms);
+        }
+    }
+    if (iopThreaded())
+    {
+        m_iopReported.store(false, std::memory_order_release);
+        m_iopReportWanted.store(true, std::memory_order_release);
+        kickIopThread();
+        const auto end = std::chrono::steady_clock::now() + 500ms;
+        while (!m_iopReported.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < end)
+            std::this_thread::yield();
+    }
+}
+
 ps2x::iop::ModuleLoadResult PS2Runtime::loadIopModule(std::string_view path, const void *arguments, uint32_t argumentSize)
 {
+    std::lock_guard<std::recursive_mutex> iopLock(m_iopMutex); // DBZIW 039
+    const IopKickOnExit kick{*this};
     auto scope = m_iopHost->enterCall(nullptr, m_memory.getRDRAM());
     return m_iopSubsystem->loadModule(path, arguments, argumentSize);
 }
 
 ps2x::iop::ModuleLoadResult PS2Runtime::loadIopModuleBuffer(uint32_t guestAddress, const void *arguments, uint32_t argumentSize)
 {
+    std::lock_guard<std::recursive_mutex> iopLock(m_iopMutex); // DBZIW 039
+    const IopKickOnExit kick{*this};
     auto scope = m_iopHost->enterCall(nullptr, m_memory.getRDRAM());
     return m_iopSubsystem->loadModuleBuffer(guestAddress, arguments, argumentSize);
 }
 
 bool PS2Runtime::stopIopModule(int32_t moduleId, int32_t *result)
 {
+    std::lock_guard<std::recursive_mutex> iopLock(m_iopMutex); // DBZIW 039
+    const IopKickOnExit kick{*this};
     auto scope = m_iopHost->enterCall(nullptr, m_memory.getRDRAM());
     return m_iopSubsystem->stopModule(moduleId, result);
 }
 
 ps2x::iop::RpcAbi PS2Runtime::selectIopRpcAbi(const ps2x::iop::RpcAbiRequest &request) const
 {
+    std::lock_guard<std::recursive_mutex> iopLock(m_iopMutex); // DBZIW 039
     return m_iopSubsystem->selectRpcAbi(request);
 }
 
 bool PS2Runtime::canBindIopRpc(uint32_t sid) const noexcept
 {
+    std::lock_guard<std::recursive_mutex> iopLock(m_iopMutex); // DBZIW 039
     return m_iopSubsystem->canBindRpc(sid);
 }
 
 bool PS2Runtime::hasEmulatedIopRpcServer(uint32_t sid) const noexcept
 {
+    std::lock_guard<std::recursive_mutex> iopLock(m_iopMutex); // DBZIW 039
     return m_iopSubsystem->hasEmulatedRpcServer(sid);
 }
 
 ps2x::iop::RpcResult PS2Runtime::handleIopRpc(uint8_t *rdram, R5900Context *ctx, ps2x::iop::RpcRequest request)
 {
+    std::lock_guard<std::recursive_mutex> iopLock(m_iopMutex); // DBZIW 039
+    const IopKickOnExit kick{*this};
     auto scope = m_iopHost->enterCall(ctx, rdram);
     request.callToken = scope.token();
     return m_iopSubsystem->handleRpc(request);
@@ -1679,6 +1915,8 @@ ps2x::iop::RpcResult PS2Runtime::handleIopRpc(uint8_t *rdram, R5900Context *ctx,
 
 uint64_t PS2Runtime::startIopRpc(uint8_t *rdram, R5900Context *ctx, ps2x::iop::RpcRequest request)
 {
+    std::lock_guard<std::recursive_mutex> iopLock(m_iopMutex); // DBZIW 039
+    const IopKickOnExit kick{*this};
     auto scope = m_iopHost->enterCall(ctx, rdram);
     request.callToken = scope.token();
     return m_iopSubsystem->startRpc(request);
@@ -1686,16 +1924,24 @@ uint64_t PS2Runtime::startIopRpc(uint8_t *rdram, R5900Context *ctx, ps2x::iop::R
 
 bool PS2Runtime::iopBusy() const noexcept
 {
+    // DBZIW 039: with its own thread the IOP needs no help from the game thread's waits (and the scheduler asks this
+    // under its event lock, which the IOP thread takes to post a completion).
+    if (iopThreaded())
+        return false;
     return m_iopSubsystem->busy();
 }
 
 bool PS2Runtime::iopRpcInFlight() const noexcept
 {
+    std::lock_guard<std::recursive_mutex> iopLock(m_iopMutex); // DBZIW 039
     return m_iopSubsystem->rpcInFlight();
 }
 
 void PS2Runtime::syncIopToHostClock() noexcept
 {
+    if (iopThreaded())
+        return; // DBZIW 039: the IOP's own thread follows the clock
+    std::lock_guard<std::recursive_mutex> iopLock(m_iopMutex); // DBZIW 039
     m_iopSubsystem->runToHostClock();
 }
 
@@ -1709,52 +1955,65 @@ void PS2Runtime::onIopRpcCompleted(uint64_t token)
 
 void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransfer &transfer)
 {
+    std::lock_guard<std::recursive_mutex> iopLock(m_iopMutex); // DBZIW 039
+    const IopKickOnExit kick{*this};
     auto scope = m_iopHost->enterCall(nullptr, rdram);
     m_iopSubsystem->onSifTransfer(transfer);
 }
 
 void PS2Runtime::advanceIopEeCycles(uint64_t eeCycles) noexcept
 {
+    if (m_iopThreaded.load(std::memory_order_relaxed))
+        return; // DBZIW 039: the IOP's own thread follows the wall clock (the game thread alone sets this flag)
     m_iopSubsystem->runEeCycles(eeCycles);
 }
 
 void PS2Runtime::resetIop()
 {
+    std::lock_guard<std::recursive_mutex> iopLock(m_iopMutex); // DBZIW 039
+    const IopKickOnExit kick{*this};
     m_iopSubsystem->reset();
 }
 
 ps2x::iop::DebugSnapshot PS2Runtime::iopDebugSnapshot() const
 {
+    std::lock_guard<std::recursive_mutex> iopLock(m_iopMutex); // DBZIW 039
     return m_iopSubsystem->debugSnapshot();
 }
 
 uint32_t PS2Runtime::allocateIopMemory(uint32_t size, uint32_t alignment)
 {
+    std::lock_guard<std::recursive_mutex> iopLock(m_iopMutex); // DBZIW 039
     return m_iopSubsystem ? m_iopSubsystem->allocateMemory(size, alignment) : 0u;
 }
 
 bool PS2Runtime::freeIopMemory(uint32_t address)
 {
+    std::lock_guard<std::recursive_mutex> iopLock(m_iopMutex); // DBZIW 039
     return m_iopSubsystem && m_iopSubsystem->freeMemory(address);
 }
 
 bool PS2Runtime::readIopMemory(uint32_t address, void *destination, size_t size) const
 {
+    std::lock_guard<std::recursive_mutex> iopLock(m_iopMutex); // DBZIW 039
     return m_iopSubsystem && m_iopSubsystem->readMemory(address, destination, size);
 }
 
 bool PS2Runtime::writeIopMemory(uint32_t address, const void *source, size_t size)
 {
+    std::lock_guard<std::recursive_mutex> iopLock(m_iopMutex); // DBZIW 039
     return m_iopSubsystem && m_iopSubsystem->writeMemory(address, source, size);
 }
 
 bool PS2Runtime::zeroIopMemory(uint32_t address, size_t size)
 {
+    std::lock_guard<std::recursive_mutex> iopLock(m_iopMutex); // DBZIW 039
     return m_iopSubsystem && m_iopSubsystem->zeroMemory(address, size);
 }
 
 bool PS2Runtime::isIopMemoryRange(uint32_t address, size_t size) const
 {
+    std::lock_guard<std::recursive_mutex> iopLock(m_iopMutex); // DBZIW 039
     return m_iopSubsystem && m_iopSubsystem->isMemoryRange(address, size);
 }
 
@@ -3849,7 +4108,12 @@ void PS2Runtime::run()
                     std::fprintf(stderr, "[state] Failed to load checkpoint state: %s\n", loadStateEnv);
                 }
             }
+            startIopThread(); // DBZIW 039 (v3 stage 3): normal mode only
+            m_gameCpuStartMs = dbziwThreadCpuMs(); // DBZIW-DEBUG (039)
             m_eeScheduler->run();
+            std::fprintf(stderr, "[game-thread] exit cpu-ms=%.0f fields=%llu iop-thread=%d\n", // DBZIW-DEBUG (039)
+                         dbziwThreadCpuMs() - m_gameCpuStartMs,
+                         static_cast<unsigned long long>(m_eeScheduler->currentVSyncTick()), iopThreaded() ? 1 : 0);
             uint32_t pc = m_debugPc.load(std::memory_order_relaxed);
             RUNTIME_LOG("Game thread returned. PC=0x" << std::hex << pc
                       << " RA=0x" << static_cast<uint32_t>(_mm_extract_epi32(m_cpuContext.r[31], 0)) << std::dec << std::endl);
@@ -3862,6 +4126,7 @@ void PS2Runtime::run()
         {
             std::cerr << "Error during program execution: unknown exception" << std::endl;
         }
+        stopIopThread(); // DBZIW 039
         gameThreadFinished.store(true, std::memory_order_release); });
 
     uint64_t tick = 0;
@@ -4104,6 +4369,7 @@ void PS2Runtime::run()
 
 bool PS2Runtime::dumpState(const std::filesystem::path &filePath)
 {
+    std::lock_guard<std::recursive_mutex> iopLock(m_iopMutex); // DBZIW 039
     std::ofstream file(filePath, std::ios::binary);
     if (!file.is_open())
     {
@@ -4141,6 +4407,7 @@ bool PS2Runtime::dumpState(const std::filesystem::path &filePath)
 
 bool PS2Runtime::loadState(const std::filesystem::path &filePath)
 {
+    std::lock_guard<std::recursive_mutex> iopLock(m_iopMutex); // DBZIW 039
     std::ifstream file(filePath, std::ios::binary);
     if (!file.is_open())
     {

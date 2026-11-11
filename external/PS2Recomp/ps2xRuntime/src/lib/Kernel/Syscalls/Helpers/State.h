@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+
 #include <cstddef>
 #include <cstdint>
 
@@ -213,8 +215,9 @@ inline std::mutex g_rpc_mutex;
 inline std::recursive_mutex g_sif_call_rpc_mutex;
 inline bool g_rpc_initialized = false;
 inline uint32_t g_rpc_next_id = 1;
-inline uint32_t g_rpc_packet_index = 0;
-inline uint32_t g_rpc_server_index = 0;
+// DBZIW 039 (v3 stage 3): atomic, the IOP's own thread allocates slots too (IopHost::allocateIopHandle).
+inline std::atomic<uint32_t> g_rpc_packet_index{0};
+inline std::atomic<uint32_t> g_rpc_server_index{0};
 inline uint32_t g_rpc_active_queue = 0;
 inline std::mutex g_bootmode_mutex;
 inline bool g_bootmode_initialized = false;

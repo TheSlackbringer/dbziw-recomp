@@ -227,6 +227,7 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
     {
         std::lock_guard lock(m_eventMutex);
         m_events.clear();
+        m_hostCalls.clear(); // DBZIW 039
         m_deadlines.clear();
         m_pendingInvocations.clear();
     }
@@ -540,6 +541,17 @@ void EeScheduler::requestStop()
     m_eventCv.notify_all();
     m_presentationCv.notify_all();
     stopWatchdog();
+}
+
+void EeScheduler::postHostCall(std::function<void()> call)
+{
+    {
+        std::lock_guard lock(m_eventMutex);
+        m_hostCalls.push_back(std::move(call));
+        m_events.push_back(EeEvent{EeEventType::HostCall, 0u, 0u});
+        m_checkpointPending.store(true, std::memory_order_release);
+    }
+    m_eventCv.notify_one();
 }
 
 void EeScheduler::postEvent(EeEvent event)
@@ -2575,6 +2587,21 @@ void EeScheduler::processEvent(const EeEvent &event)
         if (m_iopRpcCompletion)
             m_iopRpcCompletion(event.value);
         break;
+    case EeEventType::HostCall: // DBZIW 039 (v3 stage 3)
+    {
+        std::function<void()> call;
+        {
+            std::lock_guard lock(m_eventMutex);
+            if (!m_hostCalls.empty())
+            {
+                call = std::move(m_hostCalls.front());
+                m_hostCalls.pop_front();
+            }
+        }
+        if (call)
+            call();
+        break;
+    }
     case EeEventType::Alarm:
     {
         auto it = m_alarms.find(static_cast<int>(event.id));
@@ -2888,7 +2915,8 @@ void EeScheduler::dumpStallReport(uint32_t activePc, uint32_t sp, uint32_t ra)
     static constexpr const char *kSteps[] = {"loop top", "deadlines", "field deadline wait", "EE timer interrupt",
                                              "event", "preemption", "device DMA completions", "idle wait",
                                              "resume completion", "callback completion", "game code", "IOP time"};
-    static constexpr const char *kEvents[] = {"Stop", "VBlankStart", "VBlankEnd", "Dmac", "ExternalWake", "Alarm"};
+    static constexpr const char *kEvents[] = {"Stop", "VBlankStart", "VBlankEnd", "Dmac", "ExternalWake", "Alarm",
+                                              "IopRpcComplete", "HostCall"};
     static constexpr const char *kInvocations[] = {"Interrupt", "Alarm", "GsCallback", "RpcCallback",
                                                    "SyscallOverride", "ExitHandler", "HleCall", "SifCommand"};
     static constexpr const char *kStatus[] = {"running", "ready", "waiting", "waiting+suspended", "suspended", "dormant"};

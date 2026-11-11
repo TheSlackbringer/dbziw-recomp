@@ -242,6 +242,7 @@ enum class EeEventType : uint8_t
     ExternalWake,
     Alarm,
     IopRpcComplete, // DW5 009 v4.4, 015 (design 1a): value = the request's token
+    HostCall,       // DBZIW 039 (v3 stage 3): run the oldest call queued by postHostCall
 };
 
 struct EeEvent
@@ -289,6 +290,10 @@ public:
     // DBZIW 019: the EE cycles of the next field at the current mode (the CTest checks the switch with it).
     [[nodiscard]] uint64_t fieldPeriodCycles() const noexcept;
     void postEvent(EeEvent event);
+    // DBZIW 039 (v3 stage 3): from any thread, a call the game thread runs at its next event service, in order with the
+    // posted events (e.g. a SIF command the IOP's own thread sent, which queues a guest invocation).
+    void postHostCall(std::function<void()> call);
+    [[nodiscard]] bool isExecutorThread() const noexcept { return m_executorThread == std::this_thread::get_id(); }
     [[nodiscard]] bool checkpointDue(uint32_t cycles = kGeneratedCheckpointCycles) noexcept;
     void accountCycles(uint32_t cycles) noexcept;
     [[nodiscard]] bool isExecutingGuest() const noexcept;
@@ -489,6 +494,7 @@ private:
     mutable std::mutex m_eventMutex;
     std::condition_variable m_eventCv;
     std::deque<EeEvent> m_events;
+    std::deque<std::function<void()>> m_hostCalls; // m_eventMutex; one HostCall event each (DBZIW 039)
     std::vector<ScheduledEvent> m_deadlines;
     std::deque<GuestInvocation> m_pendingInvocations;
     uint64_t m_eventSequence = 0;

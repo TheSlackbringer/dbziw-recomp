@@ -232,6 +232,16 @@ namespace ps2x::iop
         m_impl->emulator.runToHostClock();
     }
 
+    uint64_t IopSubsystem::runToHostClockStep(uint64_t maxIopCycles) noexcept
+    {
+        return m_impl->emulator.runToHostClockStep(maxIopCycles);
+    }
+
+    uint64_t IopSubsystem::nanosecondsUntilNextEvent() const noexcept
+    {
+        return m_impl->emulator.nanosecondsUntilNextEvent();
+    }
+
     void IopSubsystem::onSifTransfer(const SifTransfer &transfer)
     {
         for (auto &service : m_impl->coreServices)
