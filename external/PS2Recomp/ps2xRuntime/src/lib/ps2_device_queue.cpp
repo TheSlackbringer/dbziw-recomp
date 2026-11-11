@@ -1218,6 +1218,14 @@ namespace ps2x::device
             t_workerCommand->vuEpoch != t_workerCommand->device->vuEpoch.load(std::memory_order_acquire);
     }
 
+    const std::atomic<uint64_t> *workerVu1Epoch(uint64_t &commandEpoch) noexcept
+    {
+        if (!t_workerCommand || !t_workerCommand->device)
+            return nullptr;
+        commandEpoch = t_workerCommand->vuEpoch;
+        return &t_workerCommand->device->vuEpoch;
+    }
+
     bool pauseDmaChannel(PS2Memory &mem, uint32_t channelBase, uint32_t &oldChcr)
     {
         DeviceQueue *q = findAsync(mem);

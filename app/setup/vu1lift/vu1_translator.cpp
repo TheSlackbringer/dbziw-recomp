@@ -57,6 +57,8 @@ std::string S(long long v) { return std::to_string(v); }
 // Target unit (DW5 025, as UNIT / set_unit in the Python): VU1 (16 KB micro memory) or VU0 (4 KB, the
 // microprograms the EE starts with VCALLMS). VU0 has no PATH1/XGKICK, no EFU, no XTOP/XITOP and no WAITP/MFP.
 bool g_vu0 = false;
+// DBZIW 039 S2c-2: the segment starts PATH1 transfers (XGKICK); its stores first bring PATH1 up to their cycle.
+thread_local bool g_kick = false;
 
 uint32_t pcMask() { return g_vu0 ? 0x0fffu : 0x3fffu; }
 
@@ -69,7 +71,8 @@ std::string memSq(uint32_t lm, const std::string &addr, const std::string &val)
 {
     if (g_vu0)
         return F("vl::sq0<0x%x>(c, mem, ", lm) + addr + ", " + val + ");";
-    return F("vl::sq<0x%x, false>(c, mem, ", lm) + addr + ", " + val + ", 0u);";
+    return std::string(g_kick ? "vl::LiftAccess::kickTo(c, cyc); " : "") + F("vl::sq<0x%x, false, false>(c, mem, ", lm) +
+           addr + ", " + val + ", 0u);";
 }
 
 std::string memIlw(const std::string &addr, int comp)
@@ -81,7 +84,8 @@ std::string memIsw(uint32_t lm, const std::string &addr, const std::string &val)
 {
     if (g_vu0)
         return F("vl::isw0<0x%x>(c, mem, ", lm) + addr + ", " + val + ");";
-    return F("vl::isw<0x%x, false>(c, mem, ", lm) + addr + ", " + val + ", 0u);";
+    return std::string(g_kick ? "vl::LiftAccess::kickTo(c, cyc); " : "") + F("vl::isw<0x%x, false, false>(c, mem, ", lm) +
+           addr + ", " + val + ", 0u);";
 }
 
 void vu1Only(const char *name, uint32_t pc)
@@ -243,6 +247,9 @@ std::string blendWrap(const std::string &reg, const std::string &val, uint32_t d
 // lanes, so it is left out where every lane an operand is read in is known (see normKnownStates).
 // One per thread: programs are translated in parallel (DBZIW 007).
 thread_local const std::map<uint32_t, uint32_t> *g_normKnown = nullptr;
+// DBZIW 039 S2c-1: the segment keeps its CLIP results in a local vl::LiftAccess::ClipQueue `cq` (no FCSET in it).
+thread_local bool g_localClip = false;
+std::string clipRegister() { return g_localClip ? "vl::LiftAccess::clipRead(cq, cyc)" : "c.st.clip"; }
 
 std::string nv(uint32_t r, uint32_t lanes)
 {
@@ -325,7 +332,9 @@ std::string translateUpper(const Upper &u)
         if (name == std::string("MINI") + kBC[i])
             return blendWrap(vfd, F("vuMinMaxV(vf[%u], bc<%d>(vf[%u]), false)", fs, i, ft), d);
     if (name == "CLIP")
-        return F("vl::LiftAccess::clipAt(c, cyc, vl::clipFlags(vf[%u], bc<3>(vf[%u])) & 0x3F);", fs, ft);
+        return F(g_localClip ? "vl::LiftAccess::clipPush(cq, cyc, vl::clipFlags(vf[%u], bc<3>(vf[%u])) & 0x3F);"
+                             : "vl::LiftAccess::clipAt(c, cyc, vl::clipFlags(vf[%u], bc<3>(vf[%u])) & 0x3F);",
+                 fs, ft);
     const std::string vft = "vf[" + S(ft) + "]";
     if (name == "FTOI0")
         return blendWrap(vft, "vuFtoiV(" + nv(fs, d) + ", 1.0f)", d);
@@ -457,14 +466,14 @@ std::string translateLower(const Lower &l, uint32_t lo, bool iBit, uint32_t pc)
         if (op == 0x1c)
         {
             const uint32_t viT = ft & 15;
-            return F("if (%u != 0) vi[%u] = static_cast<int32_t>(c.st.clip & 0x0FFFu);", viT, viT);
+            return F("if (%u != 0) vi[%u] = static_cast<int32_t>(%s & 0x0FFFu);", viT, viT, clipRegister().c_str());
         }
         if (op == 0x11)
             return F("vl::LiftAccess::fcsetAt(c, cyc, 0x%06xu);", lo & 0xFFFFFF);
         if (op == 0x12)
-            return F("vi[1] = ((c.st.clip & 0x%06xu) != 0) ? 1 : 0;", lo & 0xFFFFFF);
+            return F("vi[1] = ((%s & 0x%06xu) != 0) ? 1 : 0;", clipRegister().c_str(), lo & 0xFFFFFF);
         if (op == 0x13)
-            return F("vi[1] = ((c.st.clip | 0x%06xu) == 0xFFFFFFu) ? 1 : 0;", lo & 0xFFFFFF);
+            return F("vi[1] = ((%s | 0x%06xu) == 0xFFFFFFu) ? 1 : 0;", clipRegister().c_str(), lo & 0xFFFFFF);
         if (op == 0x16) // FSAND (DW5 025, VU0 program 0x0030)
         {
             const uint32_t viT = ft & 15;
@@ -1073,6 +1082,12 @@ struct Segment
     std::map<uint32_t, std::set<int>> readyStates;               // V3
     std::set<std::pair<uint32_t, int>> deadWrites;               // V3: (pc, slot)
     std::set<uint32_t> deadHorizon;                              // V3
+    // DBZIW-DEBUG (DBZIW 039 S2a): DBZIW_VU1LIFT_DIAG=1 adds vl::LiftDiag counters (pc -> why the pair runs through
+    // the per-pair path: 1 static region's fallback, 2 branch, 4 its delay slot, 8 E-bit pair or its delay slot,
+    // 0x10 FDIV, 0x20 EFU, 0x40 WAITQ, 0x80 WAITP, 0x100 XGKICK, 0x200 none of these: a run under 2 pairs, cut at a
+    // branch target, or static timing off).
+    bool diag = false;
+    std::map<uint32_t, uint32_t> diagWhy;
 
     // Sets g_normKnown for pc while it lives (the emitted pair's operands).
     struct NormScope
@@ -1180,6 +1195,11 @@ struct Segment
             lines.push_back(F("    bbValid = true; bbReg = %u; bbVal = ov;", t.firstVi));
         else
             lines.push_back("    bbValid = false;");
+        if (diag)
+        {
+            const auto why = diagWhy.find(pc);
+            lines.push_back(F("    s_diag.pair(0x%04x, 0x%xu);", pc, why == diagWhy.end() ? 0x200u : why->second));
+        }
         lines.push_back("    vl::LiftAccess::tick(c, cyc);");
         return lines;
     }
@@ -1348,8 +1368,9 @@ struct Segment
     {
         static const char *const kObservers[] = {"c.st.q", "c.st.p",  "c.st.clip", "c.st.mac",   "c.st.status",
                                                  "LiftAccess::", "vl::sq", "vl::isw", "flagsPush", "flagsSync"};
-        static const char *const kQuietObservers[] = {"vl::sq",    "vl::isw", "clipAt", "fcsetAt",
-                                                      "c.st.clip", "c.st.q",  "c.st.p", "c.st.status"};
+        // DBZIW 039 S2c-2: stores are no observers any more; PATH1 runs lazily and each store first calls kickTo.
+        static const char *const kQuietObservers[] = {"clipAt", "fcsetAt", "c.st.clip", "c.st.q", "c.st.p",
+                                                      "c.st.status"};
         const uint32_t start = region.front();
         const Simulation sim = simulateRegion(region);
         std::vector<std::vector<std::string>> bodies;
@@ -1372,7 +1393,8 @@ struct Segment
                     const std::string call = line.substr(pos + 12, e - pos - 12);
                     if (call.empty())
                         continue;
-                    if (call != "flagsPush" && call != "flagsSync" && call != "clipAt" && call != "fcsetAt")
+                    if (call != "flagsPush" && call != "flagsSync" && call != "clipAt" && call != "fcsetAt" &&
+                        call != "clipPush" && call != "clipRead" && call != "kickTo")
                         quiet = false;
                 }
         std::vector<int> pushAt;
@@ -1413,6 +1435,8 @@ struct Segment
         out.push_back("    { const uint64_t t0 = cyc;");
         out.push_back("    if (" + (conds.empty() ? std::string("true") : join(conds, " && ")) + ") {");
         out.push_back("    uint64_t synced = t0;");
+        if (diag)
+            out.push_back(F("    s_diag.region(0x%04x, %zuu);", start, region.size()));
         for (size_t i = 0; i < region.size(); ++i)
         {
             const uint32_t pc = region[i];
@@ -1494,10 +1518,46 @@ static std::string translateReachable(const std::vector<uint8_t> &code, uint32_t
         if (rl.type == LType::NORM && kMacStatusReaders.count(rl.op))
             seg.queueFmacFlags = true;
     }
+    // DBZIW 039 S2c-1: CLIP results kept locally when the segment uses the clip flag and has no FCSET (FCSET cancels a
+    // same-cycle CLIP in the interpreter's pipeline; such segments keep the shared pipeline).
+    bool usesClip = false, hasFcset = false;
+    for (uint32_t rpc : reachable)
+    {
+        const auto [rlo, rup] = unpackPair(code, rpc);
+        if (decodeUpper(rup & 0x07ffffff).name == "CLIP")
+            usesClip = true;
+        if ((rup >> 31) & 1)
+            continue;
+        const Lower rl = decodeLower(rlo, rpc);
+        if (rl.type == LType::NORM && (rl.op == 0x12 || rl.op == 0x13 || rl.op == 0x1c))
+            usesClip = true;
+        if (rl.type == LType::NORM && rl.op == 0x11)
+            hasFcset = true;
+    }
+    struct LocalClipScope
+    {
+        explicit LocalClipScope(bool on) { g_localClip = on; }
+        ~LocalClipScope() { g_localClip = false; }
+    } localClipScope(usesClip && !hasFcset);
+    bool kicks = false;
+    for (uint32_t rpc : reachable)
+    {
+        const auto [rlo, rup] = unpackPair(code, rpc);
+        if (pairTiming(rlo, rup).flags & FLAG_XGKICK)
+            kicks = true;
+    }
+    struct KickScope
+    {
+        explicit KickScope(bool on) { g_kick = on; }
+        ~KickScope() { g_kick = false; }
+    } kickScope(kicks);
 
     std::map<uint32_t, std::pair<uint32_t, std::string>> branchInfo;
     std::map<uint32_t, std::array<uint32_t, 3>> callInfo; // op, ft & 15, fs & 15
     std::set<uint32_t> branchDelaySlots, targets;
+    // DBZIW 039 S2c-3: the reset test (checkpoint) only where every loop passes: targets of backward branches and of
+    // JR (a cycle in the control flow needs a backward or an indirect edge).
+    std::set<uint32_t> loopHeads;
     for (uint32_t pc : reachable)
     {
         const auto [lo, up] = unpackPair(code, pc);
@@ -1532,9 +1592,14 @@ static std::string translateReachable(const std::vector<uint8_t> &code, uint32_t
                 fail(F("unproven JR at %04x", pc));
             const auto &jr = reach.calls->jrTargets.at(pc);
             targets.insert(jr.begin(), jr.end());
+            loopHeads.insert(jr.begin(), jr.end());
         }
         else
+        {
             targets.insert(tgt);
+            if (tgt <= pc)
+                loopHeads.insert(tgt);
+        }
         if (op == 0x21 || op == 0x24)
             callInfo[pc] = {op, ft & 15, fs & 15};
     }
@@ -1584,6 +1649,8 @@ static std::string translateReachable(const std::vector<uint8_t> &code, uint32_t
         out.push_back("    vl::LiftAccess::FlagQueue fq; vl::LiftAccess::flagsEnter(c, fq);");
     if (!seg.deadPushes.empty())
         out.push_back("    uint32_t stk = 0; // sticky bits of FMAC results nothing can observe (DW5 025)");
+    if (g_localClip)
+        out.push_back("    vl::LiftAccess::ClipQueue cq; vl::LiftAccess::clipEnter(c, cq);");
     out.push_back("    bool bbValid = false; uint8_t bbReg = 0; int32_t bbVal = 0, ov = 0;");
     out.push_back("    auto brvi = [&](int r) -> int32_t { return r == 0 ? 0 : ((bbValid && bbReg == r) ? bbVal : "
                   "vi[r]); };");
@@ -1594,7 +1661,7 @@ static std::string translateReachable(const std::vector<uint8_t> &code, uint32_t
         if (call != callInfo.end() && call->second[0] == 0x24)
             out.push_back(F("    uint32_t jump_%04x = 0;", bpc));
     }
-    out.push_back("    auto checkpoint = [&] { if (!vl::resetRequested()) return;");
+    out.push_back("    auto checkpoint = [&] { if (!vl::LiftAccess::canceled(c)) return;");
     out.push_back("        for (int n = 1; n < 32; ++n) _mm_storeu_ps(c.st.vf[n], vf[n]);");
     out.push_back("        for (int n = 1; n < 16; ++n) c.st.vi[n] = vi[n];");
     out.push_back("        _mm_storeu_ps(c.st.acc, acc);");
@@ -1620,12 +1687,43 @@ static std::string translateReachable(const std::vector<uint8_t> &code, uint32_t
             regionEnd[r.back()] = r.front();
         }
     seg.findDeadTiming(reachable, regionStart, reach.calls ? &*reach.calls : nullptr);
+    if (const char *env = std::getenv("DBZIW_VU1LIFT_DIAG"); env && std::strcmp(env, "1") == 0)
+    {
+        seg.diag = true;
+        std::set<uint32_t> inRegion;
+        for (const auto &[first, region] : regionStart)
+            inRegion.insert(region.begin(), region.end());
+        for (const auto &block : blocks)
+            for (size_t i = 0; i < block.size(); ++i)
+            {
+                const uint32_t pc = block[i];
+                const auto [lo, up] = unpackPair(code, pc);
+                uint32_t why = (pairTiming(lo, up).flags & 0x1Fu) << 4;
+                if (branchInfo.count(pc))
+                    why |= 0x2u;
+                if (branchDelaySlots.count(pc))
+                    why |= 0x4u;
+                if ((up >> 30) & 1)
+                {
+                    why |= 0x8u;
+                    if (i + 1 < block.size())
+                        seg.diagWhy[block[i + 1]] |= 0x8u;
+                }
+                if (inRegion.count(pc))
+                    why |= 0x1u;
+                seg.diagWhy[pc] |= why;
+            }
+        for (auto &[pc, why] : seg.diagWhy)
+            if (!why)
+                why = 0x200u;
+    }
 
     auto label = [&](uint32_t pc) {
         if (targets.count(pc))
         {
             out.push_back(F("loc_%04x:;", pc));
-            out.push_back("    checkpoint();");
+            if (loopHeads.count(pc))
+                out.push_back("    checkpoint();");
         }
     };
     auto append = [&](const std::vector<std::string> &lines) { out.insert(out.end(), lines.begin(), lines.end()); };
@@ -1723,6 +1821,8 @@ static std::string translateReachable(const std::vector<uint8_t> &code, uint32_t
     out.push_back("    } catch (const vl::ResetCanceled &) { resetCanceled = true; }");
     if (queue)
         out.push_back("    vl::LiftAccess::flagsLeave(c, fq, cyc);");
+    if (g_localClip)
+        out.push_back("    vl::LiftAccess::clipLeave(c, cq, cyc);");
     out.push_back("    vl::LiftAccess::leave(c, cyc, hz, bbValid, bbReg, bbVal);");
     out.push_back("    for (int i = 1; i < 32; ++i) _mm_storeu_ps(c.st.vf[i], vf[i]);");
     out.push_back("    c.st.vf[0][0] = 0.0f; c.st.vf[0][1] = 0.0f; c.st.vf[0][2] = 0.0f; c.st.vf[0][3] = 1.0f;");
@@ -1750,9 +1850,13 @@ static std::string translateReachable(const std::vector<uint8_t> &code, uint32_t
         "    static std::atomic<int> s_timingState{0};",
         F("    if (!vl::LiftAccess::validate(c, kTiming, kPcs, %zuu, s_timingState, \"", seg.timings.size()) + fnName +
             "\")) { c.declined = true; return; }"};
+    std::vector<std::string> diagLines;
+    if (seg.diag)
+        diagLines.push_back("    static vl::LiftDiag s_diag(\"" + fnName + "\"); vl::LiftDiag::run(s_diag);");
     const auto at = std::find(out.begin(), out.end(), "@@TIMING_TABLE@@");
     const size_t index = size_t(at - out.begin());
     out.erase(at);
+    out.insert(out.begin() + std::ptrdiff_t(index), diagLines.begin(), diagLines.end());
     out.insert(out.begin() + std::ptrdiff_t(index), table.begin(), table.end());
     // Every program uses the inlined FMAC fast path (DW5 025 v10 V4b: -19.5 % on the large programs, exact).
     return join(out, "\n");

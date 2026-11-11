@@ -26,6 +26,7 @@
 //
 // The header is deliberately not included by ps2_runtime.h (generated-code PCH).
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -139,6 +140,9 @@ namespace ps2x::device
     void workerCheckpointVif1Input(uint32_t consumedBytes);
     // Pause NEVER cancels an already accepted MSCAL. Only hard VU1 reset does.
     bool workerShouldCancelVu1() noexcept;
+    // DBZIW 039 S2c-3: the same test without a call, for translated VU1 code: the device's VU epoch and the running
+    // command's (nullptr when no worker command runs, as in the synchronous and deterministic modes: never cancelled).
+    const std::atomic<uint64_t> *workerVu1Epoch(uint64_t &commandEpoch) noexcept;
 
     // Game frames: fields in which the game finished at least one frame (an
     // explicit render-sync drain with device work submitted since the previous

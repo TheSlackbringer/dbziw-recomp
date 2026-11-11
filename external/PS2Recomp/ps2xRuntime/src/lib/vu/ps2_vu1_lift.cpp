@@ -6,12 +6,14 @@
 #include <atomic>
 #include <array>
 #include <cfenv>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 namespace vl
@@ -131,6 +133,58 @@ namespace vl
         return h;
     }
 
+    // DBZIW 039 S2c-2: PATH1 from c.kickCycle to `target` (or to its last copy), as progressXgkick would run it
+    // once per cycle: inside a GIFtag's payload whole quadwords at once (the j-th from 0 on cycle
+    // kickCycle + 2(j + 1) - credit; the tag was checked to fit the buffer when it was read), tags and the rest
+    // through progressXgkick itself.
+    void LiftAccess::kickToSlow(Run &c, uint64_t target)
+    {
+        VU1Interpreter &v = vu(c);
+        VU1Interpreter::XgkickPipeline &k = v.m_xgkick;
+        while (k.active && c.kickCycle < target)
+        {
+            if (!v.m_activeVuData || v.m_activeVuDataSize == 0u)
+                return; // progressXgkick moves nothing either
+            if (k.currentTagEnd == 0u || k.copiedBytes >= k.currentTagEnd)
+            {
+                ++c.kickCycle;
+                v.progressXgkick();
+                continue;
+            }
+            const uint64_t span = target - c.kickCycle;
+            uint64_t qwords = (k.currentTagEnd - k.copiedBytes) / 16u;
+            if (span < 2u * qwords - k.cycleCredit)
+                qwords = (k.cycleCredit + span) / 2u;
+            if (qwords == 0u)
+            {
+                k.cycleCredit += static_cast<uint32_t>(span); // no copy before target: credit 0 + 1 or 1 + 0
+                c.kickCycle = target;
+                return;
+            }
+            const uint32_t bytes = static_cast<uint32_t>(qwords * 16u);
+            for (uint32_t done = 0; done < bytes;)
+            {
+                const uint32_t source = (k.sourceAddress + k.copiedBytes + done) % v.m_activeVuDataSize;
+                const uint32_t n = std::min(bytes - done, v.m_activeVuDataSize - source);
+                std::memcpy(k.packet.data() + k.copiedBytes + done, v.m_activeVuData + source, n);
+                done += n;
+            }
+            k.copiedBytes += bytes;
+            c.kickCycle += 2u * qwords - k.cycleCredit;
+            k.cycleCredit = 0u;
+            if (k.copiedBytes >= k.currentTagEnd)
+            {
+                if (k.currentTagEop)
+                    v.finishXgkick();
+                else
+                {
+                    k.currentTagEnd = 0u;
+                    k.currentTagEop = false;
+                }
+            }
+        }
+    }
+
     void kickCatchUpSlow(Run &c, uint64_t cycle)
     {
         while (*c.kickActive && c.kickCycle < cycle)
@@ -195,6 +249,49 @@ namespace vl
     {
         std::fprintf(stderr, "[vu1lift] pc=%04x cycle=%llu\n", pc,
                      static_cast<unsigned long long>(cycle - c.cycle));
+    }
+
+    // DBZIW-DEBUG (DBZIW 039 S2a): PS2X_VU1_LIFT_DIAG=<file>. One line per program and pair that ran: "name pc why
+    // perPair staticEntries regionPairs" (pc and why in hex; staticEntries/regionPairs on a region's first pair), and
+    // "name runs N" per program. Written to <file>.tmp and renamed, so a reader never sees half a file.
+    void LiftDiag::run(LiftDiag &d)
+    {
+        static const char *path = std::getenv("PS2X_VU1_LIFT_DIAG");
+        if (!path || !*path)
+            return;
+        static std::mutex mutex;
+        static std::vector<LiftDiag *> all;
+        static uint32_t calls = 0;
+        static auto last = std::chrono::steady_clock::now();
+        std::lock_guard<std::mutex> lock(mutex);
+        ++d.runs;
+        if (!d.registered)
+        {
+            all.push_back(&d);
+            d.registered = true;
+        }
+        if ((++calls & 0xFFu) != 0u)
+            return;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last < std::chrono::seconds(1))
+            return;
+        last = now;
+        const std::string tmp = std::string(path) + ".tmp";
+        FILE *f = std::fopen(tmp.c_str(), "w");
+        if (!f)
+            return;
+        std::fprintf(f, "# name pc why perPair staticEntries regionPairs\n");
+        for (const LiftDiag *p : all)
+        {
+            std::fprintf(f, "%s runs %llu\n", p->name, static_cast<unsigned long long>(p->runs));
+            for (uint32_t i = 0; i < 2048u; ++i)
+                if (p->dyn[i] || p->stat[i])
+                    std::fprintf(f, "%s %04x %x %llu %llu %u\n", p->name, i << 3, p->reason[i],
+                                 static_cast<unsigned long long>(p->dyn[i]), static_cast<unsigned long long>(p->stat[i]),
+                                 p->len[i]);
+        }
+        std::fclose(f);
+        std::rename(tmp.c_str(), path);
     }
 }
 
@@ -351,6 +448,7 @@ bool VU1Interpreter::runLifted(const uint8_t *vuCode, uint32_t codeSize, uint32_
               },
               &m_xgkick.active, m_cycle};
     c.codeSize = unitSize;
+    c.cancelEpoch = ps2x::device::workerVu1Epoch(c.runEpoch);
     try
     {
         vl::checkReset(c);

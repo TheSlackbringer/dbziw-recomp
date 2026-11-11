@@ -56,6 +56,9 @@ namespace vl
         bool declined = false;
         // Micro memory size of the running unit: 16 KB (VU1) or 4 KB (VU0, DW5 025).
         uint32_t codeSize = 0x4000u;
+        // DBZIW 039 S2c-3: workerShouldCancelVu1 without a call (ps2x::device::workerVu1Epoch, set by runLifted).
+        const std::atomic<uint64_t> *cancelEpoch = nullptr;
+        uint64_t runEpoch = 0;
     };
 
     using Segment = void (*)(Run &);
@@ -366,14 +369,52 @@ namespace vl
         static uint64_t *readyTable(Run &c) { return vu(c).m_ready.data(); }
         static uint64_t cycle(Run &c) { return vu(c).m_cycle; }
 
-        // Stall to `target` (operands or units not ready).
+        // DBZIW 039 S2c-2: generated code runs PATH1 lazily. Its progress
+        // depends only on the cycles since its XGKICK and on the VU memory it
+        // reads (the packet reaches the GIF whole, at its last copy), and in a
+        // run only the program's own stores change that memory. So PATH1 is
+        // brought up to a cycle (c.kickCycle: through which it has run) only
+        // before a store, at an XGKICK's wait and on leaving; the cycle loops
+        // below apply due commits only. The hand-written helpers (begin, end,
+        // xgkick) keep the stepped model.
+        static void kickToSlow(Run &c, uint64_t target); // ps2_vu1_lift.cpp
+
+        // DBZIW 039 S2c-3: a hard VU1 reset (sceGsResetPath) stops translated
+        // code at its next loop head, XGKICK or end, tested here without a
+        // call. Never true in the synchronous and deterministic modes; in the
+        // asynchronous mode the stop point already depends on host timing.
+        static bool canceled(const Run &c)
+        {
+            return c.cancelEpoch && c.cancelEpoch->load(std::memory_order_acquire) != c.runEpoch;
+        }
+
+        static void kickTo(Run &c, uint64_t target)
+        {
+            if (*c.kickActive && c.kickCycle < target)
+                kickToSlow(c, target);
+        }
+
+        // advanceTo without PATH1: idle cycles skipped to the next due commit.
+        static void advanceCommits(VU1Interpreter &v, uint64_t target)
+        {
+            while (v.m_cycle < target)
+            {
+                const uint64_t idleEnd = std::min(target, v.m_nextCommitCycle) - 1u;
+                if (idleEnd > v.m_cycle)
+                    v.m_cycle = idleEnd;
+                ++v.m_cycle;
+                commit(v);
+            }
+            v.m_state.cycles = v.m_cycle;
+        }
+
+        // Stall to `target` (operands or units not ready; a bounded wait, so
+        // no reset test: S2c-3).
         static void stall(Run &c, uint64_t &cyc, uint64_t target)
         {
             VU1Interpreter &v = vu(c);
             v.m_cycle = cyc;
-            if (resetRequested())
-                throw ResetCanceled{};
-            advance(v, target);
+            advanceCommits(v, target);
             cyc = v.m_cycle;
         }
 
@@ -385,44 +426,45 @@ namespace vl
                 stall(c, cyc, v.m_fdiv.readyCycle);
         }
 
-        // An XGKICK waits for the previous PATH1 transfer to finish.
+        // An XGKICK waits for the previous PATH1 transfer to finish: the cycle
+        // of its last copy, with the commits due on the way.
         static void kickWait(Run &c, uint64_t &cyc)
         {
-            VU1Interpreter &v = vu(c);
-            if (!v.m_xgkick.active)
+            kickTo(c, cyc);
+            if (!*c.kickActive)
                 return;
+            kickToSlow(c, std::numeric_limits<uint64_t>::max());
+            VU1Interpreter &v = vu(c);
             v.m_cycle = cyc;
-            while (v.m_xgkick.active)
-                step(v);
+            advanceCommits(v, c.kickCycle);
             cyc = v.m_cycle;
         }
 
-        // advanceOneCycle after each pair.
+        // advanceOneCycle after each pair (PATH1 runs lazily).
         static void tick(Run &c, uint64_t &cyc)
         {
             VU1Interpreter &v = vu(c);
             ++cyc;
-            if (cyc >= v.m_nextCommitCycle || v.m_xgkick.active)
+            if (cyc >= v.m_nextCommitCycle)
             {
                 v.m_cycle = cyc;
-                commit(v);
-                kickCycle(v);
+                v.commitDuePipelines();
             }
         }
 
         // Static-timing regions issue their pairs at constant cycle offsets
         // and skip the per-pair tick. Before anything that can observe the
-        // interpreter's pipelines (flag/Q reads and pushes, stores read by
-        // PATH1) and at the region's end, this applies the cycle boundaries
-        // (synced, target] exactly as the skipped ticks and stalls would have:
-        // due commits, then one cycle of PATH1 each.
+        // interpreter's pipelines (Q and status reads, flag pushes) and at the
+        // region's end, this applies the commits due in the cycles
+        // (synced, target] as the skipped ticks and stalls would have (PATH1
+        // runs lazily, see kickTo).
         static void catchUp(Run &c, uint64_t &synced, uint64_t target)
         {
             VU1Interpreter &v = vu(c);
-            if (target > synced && (v.m_xgkick.active || target >= v.m_nextCommitCycle))
+            if (target > synced && target >= v.m_nextCommitCycle)
             {
                 v.m_cycle = synced;
-                advance(v, target);
+                advanceCommits(v, target);
             }
             synced = target;
         }
@@ -571,17 +613,87 @@ namespace vl
             q.extra[i] = extraSticky;
         }
 
+        // DBZIW 039 S2c-1: segments without FCSET keep their CLIP results here
+        // instead of the interpreter's flag pipeline (a queueClip call per CLIP
+        // and a commit pass four cycles later). A CLIP shifts the working value
+        // as queueClip does; a reader sees the latest result that is due, which
+        // is what the interpreter's commits leave in the clip register (at most
+        // one CLIP per cycle, results in issue order). Runs start with idle
+        // pipelines, so nothing is pending at entry; results still in flight
+        // go back to the interpreter's pipeline on exit.
+        struct ClipQueue
+        {
+            static constexpr uint32_t kSize = 8u; // at most 4 in flight (latency 4, one CLIP per cycle)
+            uint64_t ready[kSize];
+            uint32_t value[kSize];
+            uint32_t count = 0;     // CLIPs so far
+            uint32_t working = 0;   // the interpreter's m_workingClip
+            uint32_t committed = 0; // the clip register at entry
+        };
+
+        static void clipEnter(Run &c, ClipQueue &q)
+        {
+            q.working = vu(c).m_workingClip;
+            q.committed = c.st.clip;
+        }
+
+        static void clipPush(ClipQueue &q, uint64_t cyc, uint32_t flags)
+        {
+            q.working = ((q.working << 6) | (flags & 0x3Fu)) & 0xFFFFFFu;
+            const uint32_t i = q.count++ % ClipQueue::kSize;
+            q.ready[i] = cyc + VU1Interpreter::kFmacLatency;
+            q.value[i] = q.working;
+        }
+
+        static uint32_t clipRead(const ClipQueue &q, uint64_t cyc)
+        {
+            const uint32_t n = q.count < ClipQueue::kSize ? q.count : ClipQueue::kSize;
+            for (uint32_t k = 1u; k <= n; ++k)
+            {
+                const uint32_t i = (q.count - k) % ClipQueue::kSize;
+                if (q.ready[i] <= cyc)
+                    return q.value[i];
+            }
+            return q.committed;
+        }
+
+        // The clip register at `cyc`, and the results still in flight queued
+        // in the interpreter at their issue cycles (queueClip rebuilds each
+        // from value >> 6 and its low six bits).
+        static void clipLeave(Run &c, ClipQueue &q, uint64_t cyc)
+        {
+            VU1Interpreter &v = vu(c);
+            c.st.clip = clipRead(q, cyc);
+            const uint32_t n = q.count < ClipQueue::kSize ? q.count : ClipQueue::kSize;
+            for (uint32_t k = n; k >= 1u; --k)
+            {
+                const uint32_t i = (q.count - k) % ClipQueue::kSize;
+                if (q.ready[i] <= cyc)
+                    continue;
+                v.m_cycle = q.ready[i] - VU1Interpreter::kFmacLatency;
+                v.m_workingClip = q.value[i] >> 6;
+                v.queueClip(q.value[i] & 0x3Fu);
+            }
+            v.m_workingClip = q.working;
+            v.m_cycle = cyc;
+            q.count = 0u; // handed back: a second call (a reset's exit path) changes nothing
+            q.committed = c.st.clip;
+        }
+
         static void xgkickAt(Run &c, uint64_t cyc, uint32_t qwordAddress)
         {
-            if (resetRequested())
+            if (canceled(c))
                 throw ResetCanceled{};
             vu(c).m_cycle = cyc;
             vu(c).startXgkick(qwordAddress);
+            c.kickCycle = cyc;
         }
 
-        // Hands the segment's local timing state back to the interpreter.
+        // Hands the segment's local timing state back to the interpreter
+        // (PATH1 brought up to `cyc` first).
         static void leave(Run &c, uint64_t cyc, uint64_t horizon, bool branchValid, uint8_t branchReg, int32_t branchValue)
         {
+            kickTo(c, cyc);
             VU1Interpreter &v = vu(c);
             v.m_cycle = cyc;
             v.m_state.cycles = cyc;
@@ -719,19 +831,23 @@ namespace vl
 
     // A store issued at `cycle` lands one cycle later, after the PATH1 copies
     // up to `cycle` and before the copy at cycle + 1.
-    template <int Imm, bool Kick>
+    // Reset = false (DBZIW 039 S2c-3, translated code): no reset test per store;
+    // translated code tests at its loop heads.
+    template <int Imm, bool Kick, bool Reset = true>
     inline void sq(Run &c, uint8_t *mem, int32_t a, V v, uint64_t cycle)
     {
-        checkReset(c);
+        if constexpr (Reset)
+            checkReset(c);
         if constexpr (Kick)
             kickCatchUp(c, cycle);
         storeLanes<Imm>(mem + qaddr(a), _mm_castps_si128(v));
     }
 
-    template <int Imm, bool Kick>
+    template <int Imm, bool Kick, bool Reset = true>
     inline void isw(Run &c, uint8_t *mem, int32_t a, int32_t value, uint64_t cycle)
     {
-        checkReset(c);
+        if constexpr (Reset)
+            checkReset(c);
         if constexpr (Kick)
             kickCatchUp(c, cycle);
         storeLanes<Imm>(mem + qaddr(a), _mm_set1_epi32(static_cast<int32_t>(static_cast<uint16_t>(value))));
@@ -772,6 +888,23 @@ namespace vl
 #else
 #define VL_TRACE(c, pc, cycle) ((void)0)
 #endif
+
+    // DBZIW-DEBUG (DBZIW 039 S2a): code translated with DBZIW_VU1LIFT_DIAG=1 counts, per program and pair, the passes
+    // through the per-pair path (with why the pair is not scheduled statically) and the scheduled passes of each
+    // static region; PS2X_VU1_LIFT_DIAG=<file> writes them, cumulative, about once a second. Only the thread that
+    // runs VU1 writes the counters. Normal translations never reference it.
+    struct LiftDiag
+    {
+        explicit LiftDiag(const char *fn) : name(fn) {}
+        void pair(uint32_t pc, uint32_t why) { ++dyn[(pc >> 3) & 2047u]; reason[(pc >> 3) & 2047u] = why; }
+        void region(uint32_t start, uint32_t pairs) { ++stat[(start >> 3) & 2047u]; len[(start >> 3) & 2047u] = pairs; }
+        static void run(LiftDiag &d); // once per run of the program: registers it, writes the file about once a second
+        const char *name;
+        uint64_t runs = 0;
+        bool registered = false;
+        uint64_t dyn[2048] = {}, stat[2048] = {};
+        uint32_t reason[2048] = {}, len[2048] = {};
+    };
 }
 
 #endif
