@@ -1787,6 +1787,12 @@ void PS2Runtime::iopThreadMain()
                 traceWork += Clock::now() - workStart;
             }
         }
+        m_iopSlicesDone.fetch_add(1u, std::memory_order_acq_rel);
+        if (m_iopProgressWaiters.load(std::memory_order_acquire) != 0u)
+        {
+            { std::lock_guard<std::mutex> progressLock(m_iopProgressMutex); }
+            m_iopProgressCv.notify_all();
+        }
         if (behind != 0u)
         {
             if (trace)
@@ -1896,6 +1902,43 @@ bool PS2Runtime::canBindIopRpc(uint32_t sid) const noexcept
 {
     std::lock_guard<std::recursive_mutex> iopLock(m_iopMutex); // DBZIW 039
     return m_iopSubsystem->canBindRpc(sid);
+}
+
+bool PS2Runtime::waitForIopRpcServer(uint32_t sid, uint64_t maxIopCycles) noexcept
+{
+    // DBZIW 039 (v3 stage 3): a module's start code often only starts its RPC thread (AMSOUND), and the server exists
+    // once the IOP has run that thread. On the PS2 the IOP runs a ready thread as soon as the loader waits again, long
+    // before the EE's bind arrives; the game binds right after the load and never retries (FUN_0013e650). With the IOP
+    // on the game thread the bind's retries ran the IOP (advanceIopEeCycles); with its own thread the bind waits for the
+    // IOP's own progress instead: until the server is there, nothing on the IOP is runnable any more (no ready thread,
+    // no request in flight: the server is not coming), or the IOP has advanced maxIopCycles.
+    uint64_t start = 0u;
+    {
+        std::lock_guard<std::recursive_mutex> iopLock(m_iopMutex);
+        if (m_iopSubsystem->canBindRpc(sid))
+            return true;
+        start = m_iopSubsystem->cycles();
+    }
+    m_iopProgressWaiters.fetch_add(1u, std::memory_order_acq_rel);
+    bool found = false;
+    for (;;)
+    {
+        const uint64_t seen = m_iopSlicesDone.load(std::memory_order_acquire);
+        {
+            std::lock_guard<std::recursive_mutex> iopLock(m_iopMutex);
+            found = m_iopSubsystem->canBindRpc(sid);
+            if (found || !m_iopSubsystem->busy() || m_iopSubsystem->cycles() - start >= maxIopCycles ||
+                !m_iopThreaded.load(std::memory_order_acquire))
+                break;
+        }
+        kickIopThread();
+        std::unique_lock<std::mutex> progressLock(m_iopProgressMutex);
+        // The bound is only a guard against a lost wake-up: every IOP slice wakes this wait.
+        (void)m_iopProgressCv.wait_for(progressLock, std::chrono::milliseconds(1), [&]
+                                       { return m_iopSlicesDone.load(std::memory_order_acquire) != seen; });
+    }
+    m_iopProgressWaiters.fetch_sub(1u, std::memory_order_acq_rel);
+    return found;
 }
 
 bool PS2Runtime::hasEmulatedIopRpcServer(uint32_t sid) const noexcept

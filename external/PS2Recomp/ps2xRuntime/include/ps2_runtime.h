@@ -548,6 +548,9 @@ private:
 
     [[nodiscard]] ps2x::iop::RpcAbi selectIopRpcAbi(const ps2x::iop::RpcAbiRequest &request) const;
     [[nodiscard]] bool canBindIopRpc(uint32_t sid) const noexcept;
+    // DBZIW 039: with the IOP on its own thread, wait until the IOP has the server, has run every thread that was ready,
+    // or has advanced maxIopCycles; returns whether the server is there (SifBindRpc, right after a module load).
+    [[nodiscard]] bool waitForIopRpcServer(uint32_t sid, uint64_t maxIopCycles) noexcept;
     [[nodiscard]] bool hasEmulatedIopRpcServer(uint32_t sid) const noexcept;
     [[nodiscard]] ps2x::iop::RpcResult handleIopRpc(uint8_t *rdram, R5900Context *ctx, ps2x::iop::RpcRequest request);
     // DW5 009 v4.4 (015) (design 1a): the request run by the emulated module's RPC thread in IOP time; 0 = not possible
@@ -581,6 +584,11 @@ private:
     std::mutex m_iopWakeMutex;
     std::condition_variable m_iopWakeCv;
     bool m_iopThreadSleeping = false; // m_iopWakeMutex
+    // DBZIW 039: the IOP thread counts its slices and wakes waitForIopRpcServer after each one, only while it waits.
+    std::atomic<uint64_t> m_iopSlicesDone{0};
+    std::atomic<uint32_t> m_iopProgressWaiters{0};
+    std::mutex m_iopProgressMutex;
+    std::condition_variable m_iopProgressCv;
     std::atomic<bool> m_iopReportWanted{false}; // DBZIW-DEBUG (039): printThreadTimes asks the IOP thread
     std::atomic<bool> m_iopReported{false};
     double m_gameCpuStartMs = 0.0; // DBZIW-DEBUG (039): game thread only, its CPU time when the scheduler started

@@ -269,6 +269,8 @@ dbziw_runtime_test(settings_file) # DBZIW 007
 dbziw_runtime_test(crt_mode_switch) # DBZIW 019
 dbziw_runtime_test(host_input_field_sample) # DBZIW 013 (DW5 023 5c): one controller sample per field
 dbziw_runtime_test(ee_timer_lazy) # DBZIW 039 (v3 stage 3): EE timers advanced only when observable
+dbziw_runtime_test(iop_bind_after_load) # DBZIW 039 (v3 stage 3): a bind right after a module load, IOP thread on
+set_tests_properties(iop_bind_after_load PROPERTIES TIMEOUT 120)
 # DBZIW 013 (DW5 eaa68f3, 08d30e8): the function keys come from one table; README.md lists exactly those keys.
 add_executable(dbziw_hotkeys_test tests/hotkeys_test.cpp)
 target_link_libraries(dbziw_hotkeys_test PRIVATE ps2_runtime)

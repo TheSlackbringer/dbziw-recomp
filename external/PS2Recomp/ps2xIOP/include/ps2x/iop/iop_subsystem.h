@@ -47,6 +47,7 @@ namespace ps2x::iop
         [[nodiscard]] bool rpcInFlight() const noexcept;
         // DW5 009 v4.5 (015): the IOP has work now (a request in flight or a runnable IOP thread).
         [[nodiscard]] bool busy() const noexcept;
+        [[nodiscard]] uint64_t cycles() const noexcept; // DBZIW 039: IOP time, in IOP cycles
         void runToHostClock() noexcept;
         // DBZIW 039 (v3 stage 3), for the IOP's own host thread: one slice of at most maxIopCycles toward the wall
         // clock (returns the IOP cycles still behind), and the time to the IOP's next scheduled event (max: none).

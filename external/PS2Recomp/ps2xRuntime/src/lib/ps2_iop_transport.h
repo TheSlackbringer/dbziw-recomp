@@ -48,6 +48,17 @@ public:
         return runtime && runtime->hasEmulatedIopRpcServer(sid);
     }
 
+    [[nodiscard]] static bool iopThreaded(const PS2Runtime *runtime) noexcept
+    {
+        return runtime && runtime->iopThreaded();
+    }
+
+    // DBZIW 039: with the IOP on its own thread (see PS2Runtime::waitForIopRpcServer).
+    [[nodiscard]] static bool waitForRpcServer(PS2Runtime *runtime, uint32_t sid, uint64_t maxIopCycles) noexcept
+    {
+        return runtime && runtime->waitForIopRpcServer(sid, maxIopCycles);
+    }
+
     static void advanceCycles(PS2Runtime *runtime, uint64_t eeCycles)
     {
         if (runtime)

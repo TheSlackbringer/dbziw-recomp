@@ -360,10 +360,19 @@ namespace ps2_syscalls
         bool canBind = PS2IopTransport::canBindRpc(runtime, rpcId);
         if (!serverPtr && !canBind && (mode & 1) == 0 && runtime)
         {
-            for (int retry = 0; retry < 50 && !canBind; ++retry)
+            // A server its module is still starting: give the IOP up to 50 x 200,000 EE cycles to register it. With the
+            // IOP on its own thread (DBZIW 039) the bind waits for that thread's progress; otherwise it runs the IOP.
+            constexpr int kBindTries = 50;
+            constexpr uint64_t kBindTryEeCycles = 200000u;
+            if (PS2IopTransport::iopThreaded(runtime))
+                canBind = PS2IopTransport::waitForRpcServer(runtime, rpcId, kBindTries * kBindTryEeCycles / 8u);
+            else
             {
-                PS2IopTransport::advanceCycles(runtime, 200000);
-                canBind = PS2IopTransport::canBindRpc(runtime, rpcId);
+                for (int retry = 0; retry < kBindTries && !canBind; ++retry)
+                {
+                    PS2IopTransport::advanceCycles(runtime, kBindTryEeCycles);
+                    canBind = PS2IopTransport::canBindRpc(runtime, rpcId);
+                }
             }
         }
         std::fprintf(stderr, "[EE:rpc] SifBindRpc client=0x%x sid=0x%x canBind=%d serverPtr=0x%x\n", clientPtr, rpcId, canBind ? 1 : 0, serverPtr);

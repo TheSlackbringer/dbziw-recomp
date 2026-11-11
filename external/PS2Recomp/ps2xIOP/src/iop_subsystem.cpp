@@ -222,6 +222,11 @@ namespace ps2x::iop
         return m_impl->emulator.busy();
     }
 
+    uint64_t IopSubsystem::cycles() const noexcept
+    {
+        return m_impl->emulator.cycles();
+    }
+
     bool IopSubsystem::rpcInFlight() const noexcept
     {
         return m_impl->emulator.rpcInFlight();
