@@ -150,8 +150,18 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
   machine-specific fixes. Correctness is defined by PS2 behaviour.
 - **The user's desktop is off limits:** never send synthetic input to it, never screenshot it (use frame dumps),
   never unlock it, never edit `~/.config/PCSX2`. Visible windows only for a maintainer test session or when asked.
-- **One game at a time;** no builds or test runs while the user has a game window open. Tests use the silent sink
-  `dbziw_codex_tests`; live play uses the default output. Never change audio defaults or route other apps.
+- **Game runs and builds go through the slots (2026-11-11, issue 040, DW5 064; replaces "one game at a time"):**
+  `notes/issues/tests/slots.py` shares the PC between sessions and between the ports (DBZIW and DW5 use the same
+  slots). `alone`: a run that measures time (FPS, late fields, frame times, hitches, sound gaps) has the PC to itself.
+  `beside`: runs that only check results (RAM dumps, log lines, pictures, card contents), up to 4 at once. `build`:
+  one build at a time, at low priority, never during an `alone` run. A run waits for its slot; it does not fail.
+  Tests take their slot in `dbztest.ensure_ready()` (`alone` unless the test's file is in `dbztest.SIDE_BY_SIDE`; a
+  test joins that list only after its pass criteria were read for anything timed). By hand, and for scripts that
+  start the game themselves: `slots.py alone|beside|build -- <command>`; `slots.py status` shows who holds what.
+  Never start a game or a build around the slots, and never ask for `beside` for a run whose result depends on time.
+  Each session works in its own worktree and build folder. No builds or test runs while the user has a game window
+  open (`run.py play|window` take the whole PC; a game started by hand makes every run wait). Tests use the silent
+  sink `dbziw_codex_tests`; live play uses the default output. Never change audio defaults or route other apps.
 - **Downloads need explicit permission** (name, source, size).
 - **Nothing derived from the game in Git:** no game files (`game/`, `discs/`), Ghidra DBs, generated or lifted C++
   (`recomp/output/`, `recomp/vu0/`, `recomp/vu1/`), frame dumps, captures, AFS/SFD audio/video streams, microcode `.bin`,
@@ -188,7 +198,8 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
   before expensive batches; at ≤10 % left, checkpoint (`work.md`, index) before continuing.
 
 ## Essentials
-- Build: `cmake --build app/build` (all), `--target dbziw` (game), `--target dbziw_setup` (setup wizard).
+- Build: `notes/issues/tests/slots.py build -- cmake --build app/build` (all), `--target dbziw` (game),
+  `--target dbziw_setup` (setup wizard); the slot keeps a build out of other sessions' timing runs.
   Regenerate code: `tools/regen.sh` (needs the player's disc in `game/`). CTests: `cd app/build && ctest`.
 - **Preflight before any timing or play run:** `notes/issues/tests/dbztest.py preflight [--build <dir>]`
   (`run_game` runs it): Release, `PS2X_ENABLE_AGRESSIVE_LOGS:BOOL=OFF` in `CMakeCache.txt`, no `AGRESSIVE_LOGS=1` /
@@ -263,8 +274,9 @@ functions that never wait; a replacement may continue into another guest functio
 
 ### Running the game by hand (prefer the issue tests and helpers)
 From `game`: `PS2X_GS_BACKEND=vulkan PS2X_HIDDEN=1 PS2X_GS_SCALE=1 PS2X_GS_SSAA=1 PULSE_SINK=dbziw_codex_tests
-PS2X_HOST_INPUT="<tick>:<KEY>:<hold>,..." PS2X_DUMP_DIR=<dir> PS2X_DUMP_EVERY=<n> PS2X_EXIT_TICK=<n> timeout <s>
-../app/build/dbziw ./SLES_553.47 > run.log 2>&1`. Ticks are VSync fields (50/s in PAL50 mode, 59.94/s in PAL60
+PS2X_HOST_INPUT="<tick>:<KEY>:<hold>,..." PS2X_DUMP_DIR=<dir> PS2X_DUMP_EVERY=<n> PS2X_EXIT_TICK=<n>
+../notes/issues/tests/slots.py alone -- timeout <s> ../app/build/dbziw ./SLES_553.47 > run.log 2>&1` (the slot:
+`alone`, or `beside` for a run that measures no time). Ticks are VSync fields (50/s in PAL50 mode, 59.94/s in PAL60
 mode), so the same tick is a different moment in each mode (issue 019). Test runs pin PAL50 (`PS2X_VIDEO_MODE=50` in
 `dbztest.run_game`); the launcher starts players at 60 Hz. PAL60 routes: `dbztest.to_pal60()` (the game's own switch,
 then every PAL50 press at the same moment) and `dbztest.at_60hz()` (a run at 60 Hz from its first field).
