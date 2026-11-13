@@ -34,6 +34,14 @@ Items marked *(planned: NNN)* below do not exist yet; that issue brings them.
   run, verify, and log. The "Maintainer test" section is strictly reserved for things a machine cannot
   judge (gameplay feel, controller responsiveness, visual artifacts, sound timing). If an issue is
   100% covered by automated tests, the Maintainer test is explicitly "None (fully automated)".
+- **Long test series only on the user's yes (2026-11-13).** After a change a session runs only the unit tests,
+  the go (`run.py go`, once issue 041 has brought it) and the issue's short check: at most 3 game runs and 10 minutes together. Anything longer is a long
+  series, whatever a spec calls it. If you think one is worth running (usually at a milestone that changes
+  behaviour, not one that only removes or tidies code), ask in one line: what it would show that the short checks
+  do not, how many runs and minutes, and whether you recommend it. Run it only when the user answers yes, that one
+  time. Without a yes, skip it: write "full series not run" in the report and carry on; it blocks no commit. Never
+  start, queue or wait for the PC for a long series before that yes, and add no repeats beyond what was agreed.
+  This wins over every spec's test plan, approved ones included.
 - **Pushing requires permission:** push only after the user agreed to that push.
 - Changes to `notes/` are tracked in its own local git repo (`git -C notes log`); commit your notes changes there.
 - Before relying on the game files, verify them: `game/SLES_553.47` must match the player's legally dumped retail disc (PAL v1.00)
